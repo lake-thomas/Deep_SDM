@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import geopandas as gpd
 import contextily as ctx # For basemaps in plotting errors
-from model import HostImageryClimateModel, HostImageryOnlyModel, HostClimateOnlyModel
+from model import HostImageryClimateModel, HostImageryOnlyModel, HostClimateOnlyModel, HostImageryClimateTopoModel, HostTopoOnlyModel
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
 from sklearn.metrics import roc_curve, roc_auc_score, matthews_corrcoef
 
@@ -36,6 +36,10 @@ def test_model(model, test_loader, device, out_dir="model_results"):
             outputs = model(images)
         elif isinstance(model, HostClimateOnlyModel):
             outputs = model(envs)
+        elif isinstance(model, HostImageryClimateTopoModel):
+            outputs = model(images, batch["topo"].to(device), envs)
+        elif isinstance(model, HostTopoOnlyModel):
+            outputs = model(batch["topo"].to(device))
         else:
             raise NotImplementedError("Unknown model type for test_model")
 
@@ -122,6 +126,10 @@ def map_model_errors(model, test_loader, device, out_dir="model_results"):
             outputs = model(images)
         elif isinstance(model, HostClimateOnlyModel):
             outputs = model(envs)
+        elif isinstance(model, HostImageryClimateTopoModel):
+            outputs = model(images, batch["topo"].to(device), envs)
+        elif isinstance(model, HostTopoOnlyModel):
+            outputs = model(batch["topo"].to(device))
         else:
             raise NotImplementedError("Unknown model type")
         

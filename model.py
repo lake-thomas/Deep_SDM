@@ -26,10 +26,15 @@ class HostImageClimateModelBase(torch.nn.Module):
 
         if isinstance(self, HostImageryClimateModel):
             out = self(images, envs)
+        elif isinstance(self, HostImageryClimateTopoModel):
+            out = self(images, batch["topo"].to(device), envs)
         elif isinstance(self, HostImageryOnlyModel):
             out = self(images)
         elif isinstance(self, HostClimateOnlyModel):
             out = self(envs)
+        elif isinstance(self, HostTopoOnlyModel):
+            out = self(batch["topo"].to(device))
+            out = self(batch["topo"].to(device))
         else:
             raise NotImplementedError("Unknown model type for training_step")
 
@@ -51,10 +56,14 @@ class HostImageClimateModelBase(torch.nn.Module):
 
         if isinstance(self, HostImageryClimateModel):
             out = self(images, envs)
+        elif isinstance(self, HostImageryClimateTopoModel):
+            out = self(images, batch["topo"].to(device), envs)
         elif isinstance(self, HostImageryOnlyModel):
             out = self(images)
         elif isinstance(self, HostClimateOnlyModel):
             out = self(envs)
+        elif isinstance(self, HostTopoOnlyModel):
+            out = self(batch["topo"].to(device))
         else:
             raise NotImplementedError("Unknown model type for validation_step")
 
@@ -78,7 +87,7 @@ class HostImageClimateModelBase(torch.nn.Module):
         print(f"Epoch [{epoch+1}], train_loss: {result['train_loss']:.4f}, val_loss: {result['val_loss']:.4f}, val_acc: {result['val_acc']:.4f}")
 
 
-def get_resnet_model(pretrained=True):
+def get_resnet_model(pretrained=True, in_channels=4):
     """
     Create a ResNet model that accepts 4-channel input (NAIP RGB + NIR)
     """
@@ -87,7 +96,7 @@ def get_resnet_model(pretrained=True):
     model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
     # Modify the first convolution layer to accept 4 channels instead of 3 (RBG + NIR for NAIP)
     original_conv = model.conv1
-    model.conv1 = nn.Conv2d(in_channels=4,
+    model.conv1 = nn.Conv2d(in_channels=in_channels,
                             out_channels=original_conv.out_channels,
                             kernel_size=original_conv.kernel_size,
                             stride=original_conv.stride,
@@ -97,7 +106,11 @@ def get_resnet_model(pretrained=True):
     # Initalize the new conv layer weights for the 4th channel as the mean of the first 3 channels
     with torch.no_grad():
         model.conv1.weight[:, :3, :, :] = original_conv.weight
-        model.conv1.weight[:, 3, :, :] = original_conv.weight.mean(dim=1)
+        if in_channels >= 4:
+            model.conv1.weight[:, 3, :, :] = original_conv.weight.mean(dim=1)
+        if in_channels > 4:
+            for c in range(4, in_channels):
+                model.conv1.weight[:, c, :, :] = original_conv.weight.mean(dim=1)
 
     return model
 
@@ -221,3 +234,39 @@ class HostClimateOnlyModel(HostImageClimateModelBase):
         out = self.classifier(env_feat) # Shape: (batch_size, 1)
         return out.squeeze(1) # Return shape (batch_size,)
 
+
+
+class HostImageryClimateTopoModel(HostImageClimateModelBase):
+    def __init__(self, num_env_features, naip_channels=4, topo_channels=4, topo_features=128, env_features=128, hidden_features=256, dropout=0.25):
+        super().__init__()
+        self.image_resnet = get_resnet_model(pretrained=True, in_channels=naip_channels)
+        self.image_resnet.fc = nn.Identity()
+        self.topo_resnet = get_resnet_model(pretrained=True, in_channels=topo_channels)
+        self.topo_resnet.fc = nn.Identity()
+        self.topo_proj = nn.Sequential(nn.Linear(512, topo_features), nn.ReLU(), nn.BatchNorm1d(topo_features))
+        self.climate_mlp = nn.Sequential(nn.Linear(num_env_features, env_features), nn.ReLU(), nn.BatchNorm1d(env_features))
+        self.classifier = nn.Sequential(nn.Linear(512 + topo_features + env_features, hidden_features), nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden_features, 1))
+
+    def forward(self, img, topo, env):
+        x1 = self.image_resnet(img)
+        x2 = self.topo_proj(self.topo_resnet(topo))
+        x3 = self.climate_mlp(env)
+        out = self.classifier(torch.cat([x1, x2, x3], dim=1))
+        return out.squeeze(1)
+
+
+# Backward-compatible alias
+HostNAIPTopoClimateModel = HostImageryClimateTopoModel
+
+
+class HostTopoOnlyModel(HostImageClimateModelBase):
+    """Topography-only ResNet18 binary classifier."""
+    def __init__(self, topo_channels=4, hidden_dim=256, dropout=0.25):
+        super().__init__()
+        self.topo_resnet = get_resnet_model(pretrained=True, in_channels=topo_channels)
+        self.topo_resnet.fc = nn.Identity()
+        self.classifier = nn.Sequential(nn.Linear(512, hidden_dim), nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden_dim, 1))
+
+    def forward(self, topo):
+        feat = self.topo_resnet(topo)
+        return self.classifier(feat).squeeze(1)
