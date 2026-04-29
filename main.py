@@ -16,7 +16,7 @@ import json # noqa: E402
 import pandas as pd # noqa: E402
 import torch # noqa: E402
 from torch.utils.data import DataLoader # noqa: E402
-from model import HostImageryClimateModel, HostImageryOnlyModel, HostClimateOnlyModel # noqa: E402
+from model import HostImageryClimateModel, HostImageryOnlyModel, HostClimateOnlyModel, HostImageryClimateTopoModel # noqa: E402
 from datasets import HostNAIPDataset # noqa: E402
 from transforms import RandomAugment4Band # noqa: E402
 from eval_utils import test_model, plot_accuracies, plot_losses, map_model_errors # noqa: E402
@@ -72,9 +72,10 @@ def main():
 
     # Dataset
     env_vars = config['env_features'] # List of environmental variables (WorldClim, GHM, DEM, etc.) from config
-    train_ds = HostNAIPDataset(config['csv_path'], config['image_dir'], 'train', env_vars, transform=image_transform)
-    val_ds = HostNAIPDataset(config['csv_path'], config['image_dir'], 'val', env_vars)
-    test_ds = HostNAIPDataset(config['csv_path'], config['image_dir'], 'test', env_vars) # Return lat/lon for mapping errors
+    input_mode = config.get('input_mode', 'baseline')
+    train_ds = HostNAIPDataset(config['csv_path'], config['image_dir'], 'train', env_vars, transform=image_transform, input_mode=input_mode)
+    val_ds = HostNAIPDataset(config['csv_path'], config['image_dir'], 'val', env_vars, input_mode=input_mode)
+    test_ds = HostNAIPDataset(config['csv_path'], config['image_dir'], 'test', env_vars, input_mode=input_mode) # Return lat/lon for mapping errors
 
     # Dataloaders
     train_dl = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, num_workers=4)
@@ -93,6 +94,8 @@ def main():
         model = HostImageryOnlyModel(dropout=dropout).to(device)
     elif model_type == "climate_only":
         model = HostClimateOnlyModel(num_env_features=len(env_vars), dropout=dropout).to(device)
+    elif model_type in {"naip_topo_climate", "image_topo_climate"}:
+        model = HostImageryClimateTopoModel(num_env_features=len(env_vars), dropout=dropout).to(device)
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
 

@@ -66,6 +66,9 @@ from rasterio.mask import mask
 from rasterio.merge import merge
 from rasterio.transform import from_origin
 from rasterio.windows import Window
+from rasterio.vrt import WarpedVRT
+from rasterio.enums import Resampling
+from rasterio.warp import reproject
 from shapely.geometry import Point, box
 from tqdm import tqdm
 
@@ -76,6 +79,8 @@ from tqdm import tqdm
 
 WC_VARS = [f"wc2.1_30s_bio_{i}" for i in range(1, 20)] # 19 Bioclimatic variables from WorldClim 2.1 at 30 arc-second resolution
 ALL_ENV_VARS = WC_VARS + ["ghm"] # All Env vars including GHM
+TOPO_IMAGE_BANDS = ["elevation", "slope", "northness", "eastness"]
+TOPO_SCALAR_COLUMNS = ["elev_mean","elev_sd","elev_min","elev_max","elev_p05","elev_p95","relief_p95_p05","slope_mean","slope_sd","slope_p95","northness_mean","eastness_mean","topo_valid_frac"]
 
 
 def parse_args():
@@ -130,6 +135,15 @@ def parse_args():
     parser.add_argument("--lat-col", type=str, default="decimalLatitude")
     parser.add_argument("--lon-col", type=str, default="decimalLongitude")
     parser.add_argument("--source-col", type=str, default="Source")
+
+    parser.add_argument("--topo-mode", choices=["none", "scalar", "chip", "both"], default="none")
+    parser.add_argument("--dem-raster", type=str, default=None)
+    parser.add_argument("--slope-raster", type=str, default=None)
+    parser.add_argument("--aspect-raster", type=str, default=None)
+    parser.add_argument("--northness-raster", type=str, default=None)
+    parser.add_argument("--eastness-raster", type=str, default=None)
+    parser.add_argument("--topo-chip-size", type=int, default=128)
+    parser.add_argument("--topo-min-valid-frac", type=float, default=0.90)
 
     args = parser.parse_args()
 
@@ -953,6 +967,46 @@ def extract_naip_chip_for_point(lon: float,
 # Dataset builders
 # ---------------------------------------------------------------------
 
+def extract_topo_for_naip_chip(naip_chip_fp: str, topo_sources: dict, out_fp: str | None, topo_chip_size: int):
+    with rasterio.open(naip_chip_fp) as naip:
+        dst_transform = naip.transform * rasterio.Affine.scale(naip.width / topo_chip_size, naip.height / topo_chip_size)
+        dst_crs = naip.crs
+    layers = {}
+    for name in ["elevation", "slope", "northness", "eastness"]:
+        src = topo_sources.get(name)
+        if src is None:
+            continue
+        dst = np.full((topo_chip_size, topo_chip_size), np.nan, dtype=np.float32)
+        reproject(source=rasterio.band(src,1), destination=dst, src_transform=src.transform, src_crs=src.crs, dst_transform=dst_transform, dst_crs=dst_crs, resampling=Resampling.bilinear)
+        layers[name]=dst
+    if "northness" not in layers or "eastness" not in layers:
+        aspect = topo_sources.get("aspect")
+        if aspect is not None:
+            a = np.full((topo_chip_size, topo_chip_size), np.nan, dtype=np.float32)
+            reproject(source=rasterio.band(aspect,1), destination=a, src_transform=aspect.transform, src_crs=aspect.crs, dst_transform=dst_transform, dst_crs=dst_crs, resampling=Resampling.bilinear)
+            rad = np.deg2rad(a)
+            layers.setdefault("northness", np.cos(rad))
+            layers.setdefault("eastness", np.sin(rad))
+    stack = np.stack([layers.get(k, np.full((topo_chip_size, topo_chip_size), np.nan, dtype=np.float32)) for k in TOPO_IMAGE_BANDS], axis=0)
+    valid = np.isfinite(stack[0])
+    valid_frac = float(valid.mean())
+    elev = stack[0][valid]; slope = stack[1][valid]; n = stack[2][valid]; e = stack[3][valid]
+    stats = {"topo_valid_frac": valid_frac}
+    if elev.size:
+        stats.update({"elev_mean": float(np.nanmean(elev)), "elev_sd": float(np.nanstd(elev)), "elev_min": float(np.nanmin(elev)), "elev_max": float(np.nanmax(elev),), "elev_p05": float(np.nanpercentile(elev,5)), "elev_p95": float(np.nanpercentile(elev,95)), "relief_p95_p05": float(np.nanpercentile(elev,95)-np.nanpercentile(elev,5)), "slope_mean": float(np.nanmean(slope)), "slope_sd": float(np.nanstd(slope)), "slope_p95": float(np.nanpercentile(slope,95)), "northness_mean": float(np.nanmean(n)), "eastness_mean": float(np.nanmean(e))})
+    else:
+        for c in TOPO_SCALAR_COLUMNS:
+            stats[c] = np.nan
+    if out_fp is not None:
+        Path(out_fp).parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(naip_chip_fp) as naip:
+            profile = naip.profile.copy()
+        profile.update(count=4, dtype="float32", compress="deflate", tiled=True, width=topo_chip_size, height=topo_chip_size, transform=dst_transform)
+        with rasterio.open(out_fp, "w", **profile) as dst:
+            dst.write(np.nan_to_num(stack, nan=0.0).astype(np.float32))
+    return stats
+
+
 def add_normalized_lat_lon(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     lat_std = df["lat"].std()
@@ -972,6 +1026,10 @@ def add_normalized_lat_lon(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_dataset_csv(points_df: pd.DataFrame,
+                      topo_sources: dict | None,
+                      topo_mode: str,
+                      topo_chip_size: int,
+                      topo_min_valid_frac: float,
                       dataset_root: Path,
                       tileindex_gdf: gpd.GeoDataFrame,
                       naip_file_index: dict,
@@ -1023,6 +1081,17 @@ def build_dataset_csv(points_df: pd.DataFrame,
         if not is_valid_env_record(env):
             continue
 
+        topo_chip_rel = None
+        topo_stats = {}
+        if topo_mode != "none":
+            topo_chip_fp = None
+            if topo_mode in {"chip","both"}:
+                topo_chip_fp = chip_dir / chip_fn.replace("chip_", "topo_chip_")
+                topo_chip_rel = os.path.relpath(topo_chip_fp, dataset_root)
+            topo_stats = extract_topo_for_naip_chip(str(chip_fp), topo_sources, str(topo_chip_fp) if topo_chip_fp else None, topo_chip_size)
+            if topo_stats.get("topo_valid_frac", 0.0) < topo_min_valid_frac:
+                continue
+
         rec = {
             "sample_id": sample_id,
             "chip_path": os.path.relpath(chip_fp, dataset_root),
@@ -1030,7 +1099,8 @@ def build_dataset_csv(points_df: pd.DataFrame,
             "presence": presence,
             "lat": lat,
             "lon": lon,
-            "source": source
+            "source": source,
+            "topo_chip_path": topo_chip_rel
         }
 
         for optional_col in ["nearest_presence_km", "background_sampling_rule"]:
@@ -1041,6 +1111,8 @@ def build_dataset_csv(points_df: pd.DataFrame,
             rec["cv_round"] = cv_round
 
         rec.update(env)
+        if topo_mode in {"scalar","both","chip"}:
+            rec.update(topo_stats)
         records.append(rec)
 
     df = pd.DataFrame(records)
@@ -1188,11 +1260,23 @@ def process_species(csv_path: Path, args, tileindex_gdf, downloaded_tiles_gdf, w
     # -----------------------------------------------------------------
     wc_datasets = open_worldclim_datasets(args.worldclim_folder)
     ghm_ds = rasterio.open(args.ghm_raster)
+    topo_sources = None
+    if args.topo_mode != "none":
+        topo_sources = {"elevation": rasterio.open(args.dem_raster), "slope": rasterio.open(args.slope_raster)}
+        if args.northness_raster and args.eastness_raster:
+            topo_sources["northness"] = rasterio.open(args.northness_raster)
+            topo_sources["eastness"] = rasterio.open(args.eastness_raster)
+        elif args.aspect_raster:
+            topo_sources["aspect"] = rasterio.open(args.aspect_raster)
 
     try:
         # ----------------------- Uniform final dataset -----------------------
         uniform_final = build_dataset_csv(
             points_df=uniform_points,
+            topo_sources=topo_sources,
+            topo_mode=args.topo_mode,
+            topo_chip_size=args.topo_chip_size,
+            topo_min_valid_frac=args.topo_min_valid_frac,
             dataset_root=uniform_root,
             tileindex_gdf=tileindex_gdf,
             naip_file_index=naip_file_index,
@@ -1217,6 +1301,10 @@ def process_species(csv_path: Path, args, tileindex_gdf, downloaded_tiles_gdf, w
 
             cv_final = build_dataset_csv(
                 points_df=round_df,
+                topo_sources=topo_sources,
+                topo_mode=args.topo_mode,
+                topo_chip_size=args.topo_chip_size,
+                topo_min_valid_frac=args.topo_min_valid_frac,
                 dataset_root=cv_dir,
                 tileindex_gdf=tileindex_gdf,
                 naip_file_index=naip_file_index,
@@ -1237,6 +1325,9 @@ def process_species(csv_path: Path, args, tileindex_gdf, downloaded_tiles_gdf, w
         for ds in wc_datasets.values():
             ds.close()
         ghm_ds.close()
+        if topo_sources:
+            for ds in topo_sources.values():
+                ds.close()
 
 
 # ---------------------------------------------------------------------
