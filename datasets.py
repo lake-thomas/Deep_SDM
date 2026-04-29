@@ -1,6 +1,3 @@
-# Pytorch data classes for host tree classification using NAIP imagery and environmental variables
-# Thomas Lake, January 2026
-
 import os
 import pandas as pd
 import numpy as np
@@ -8,70 +5,52 @@ import rasterio
 import torch
 from torch.utils.data import Dataset
 
-# Create Pytorch Dataset for NAIP imagery and Environmental Variables
+TOPO_SCALAR_COLUMNS = ["elev_mean","elev_sd","elev_min","elev_max","elev_p05","elev_p95","relief_p95_p05","slope_mean","slope_sd","slope_p95","northness_mean","eastness_mean","topo_valid_frac"]
 
 class HostNAIPDataset(Dataset):
-    def __init__(self, csv_path, image_base_dir, split='train', environment_features=None, transform=None):
-        """
-        csv_path: Path to the CSV file with metadata including NAIP image paths and environmental features (normalized to [0, 1])
-        image_base_dir: Base directory where NAIP images are stored, corresponds to the chip_path column in the CSV
-        split: 'train', 'val', or 'test' to specify the dataset split and filter the DataFrame accordingly
-        environment_features: List of environmental feature columns to include in the dataset
-        transform: Optional torchvision transforms to apply to the images
-        """
+    def __init__(self, csv_path, image_base_dir, split='train', environment_features=None, transform=None, input_mode="baseline"):
         self.df = pd.read_csv(csv_path)
-        self.df = self.df[self.df['split'] == split].reset_index(drop=True) 
+        self.df = self.df[self.df['split'] == split].reset_index(drop=True)
         self.image_base_dir = image_base_dir
-
-        # Get all columns starting with 'wc2.1_30s' and Global Human Modification (ghm) as environment features
-        self.environment_features = [col for col in self.df.columns if col.startswith('wc2.1_30s') or col in ['ghm', 'lat_norm', 'lon_norm']]
-        
-        # Optimized and uncorrelated set of features based on prior experiments.
-        # Bio 1 (mean annual temp), bio 7 (temp annual range), bio 12 (annual precip), bio 15 (precip seasonality), ghm (human modification).
-        # self.environment_features = ["wc2.1_30s_bio_1", "wc2.1_30s_bio_7", "wc2.1_30s_bio_12", "wc2.1_30s_bio_15", "ghm"]
-
         self.transform = transform
+        self.input_mode = input_mode
+        base_env = [c for c in self.df.columns if c.startswith('wc2.1_30s') or c in ['ghm', 'lat_norm', 'lon_norm']]
+        if input_mode in {"topo_scalar", "full"}:
+            base_env += [c for c in TOPO_SCALAR_COLUMNS if c in self.df.columns]
+        self.environment_features = environment_features or base_env
 
     def __len__(self):
         return len(self.df)
-    
+
+    def _load_raster(self, path, scale255=False):
+        with rasterio.open(path) as src:
+            arr = src.read().astype(np.float32)
+        if scale255:
+            arr = arr / 255.0
+        return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-
-        # Load NAIP chips: path is relative to image_base_dir
-        img_path = os.path.join(self.image_base_dir, row['chip_path'])
-
-        with rasterio.open(img_path) as src:
-            img = src.read() # shape: (bands, height, width), NAIP is 4bands (RGB + NIR)
-            img = img.astype(np.float32) / 255.0 # Convert Byte NAIP image (0-255) to float32 and normalize to [0, 1]
-
+        img = self._load_raster(os.path.join(self.image_base_dir, row['chip_path']), scale255=True)
+        img = torch.from_numpy(img)
         if self.transform:
-            # torchvision transforms expect (C, H, W) format from PIL or tensor, but rasterio gives np array
-            # so convert numpy to tensor first (C,H,W)
-            img = torch.from_numpy(img)
             img = self.transform(img)
-        else:
-            # If no transform, ensure it's a tensor
-            img = torch.from_numpy(img)
 
-        # Load environmental features as float32 tensor
-        env_features = row[self.environment_features].values.astype(np.float32)
-        env_features = torch.tensor(env_features, dtype=torch.float32)
-        env_features = torch.clamp(env_features, min=-10.0, max=10.0) # Clamp extreme values to avoid inf/nan issues during training
+        env_features = torch.tensor(row[self.environment_features].values.astype(np.float32), dtype=torch.float32)
+        env_features = torch.nan_to_num(env_features, nan=0.0, posinf=0.0, neginf=0.0)
+        label = torch.tensor(row['presence'], dtype=torch.float32)
 
-        # Load label (presence/absence) as 0/1 encoded float32 tensor
-        label = torch.tensor(row['presence'], dtype=torch.float32)  # 'presence' is the label column (0/1)
+        batch = {"image": img, "env": env_features, "label": label,
+                 "lat": torch.tensor(row['lat'], dtype=torch.float32),
+                 "lon": torch.tensor(row['lon'], dtype=torch.float32),
+                 "path": str(row['chip_path'])}
 
-        # Added: return lat/ lon for spatial mapping of errors and chip_path for inspection of error cases
-        lat = torch.tensor(row['lat'], dtype=torch.float32)
-        lon = torch.tensor(row['lon'], dtype=torch.float32)
-        path = str(row['chip_path'])
+        if self.input_mode in {"topo_chip", "full"}:
+            topo_path = row.get("topo_chip_path", None)
+            if pd.isna(topo_path) or topo_path is None:
+                raise ValueError("Topography chip requested but topo_chip_path missing")
+            topo = self._load_raster(os.path.join(self.image_base_dir, topo_path), scale255=False)
+            topo[1] = topo[1] / 90.0
+            batch["topo"] = torch.from_numpy(topo.astype(np.float32))
 
-        # return img, env_features, label, lat, lon, path
-        return {"image": img,
-                "env": env_features,
-                "label": label,
-                "lat": lat,
-                "lon": lon,
-                "path": path}
-# EOF
+        return batch
