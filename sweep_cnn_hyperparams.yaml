@@ -1,0 +1,14 @@
+method: grid
+name: sweep_batchsize_lr_dropout_epochs
+metric:
+  name: val_acc
+  goal: maximize
+parameters:
+  batch_size:
+    values: [16, 32, 64, 128, 256]
+  learning_rate:
+    values: [0.00001, 0.000001]
+  epochs:
+    value: [30]
+  dropout:
+    values: [0.25, 0.50, 0.75]

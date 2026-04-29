@@ -1,0 +1,22 @@
+{
+    "experiment": "prunus_serotina_image_climate_uniform_bioall_ghm_latlon_20ep_experiment_april2026",
+    "csv_path": "Y:\\Host_NAIP_SDM\\Host_NAIP_Datasets\\prunus_serotina_Datasets\\prunus_serotina_US_Uniform_PA_NAIP_256_april2026\\prunus_serotina_Pres_Bg_US_Uniform_Train_Val_Test_Dataset.csv",
+    "image_dir": "Y:\\Host_NAIP_SDM\\Host_NAIP_Datasets\\prunus_serotina_Datasets\\prunus_serotina_US_Uniform_PA_NAIP_256_april2026",
+    "output_dir": "Y:\\Host_NAIP_SDM\\Outputs_Host_NAIP_SDMs",
+    "model_type": "image_climate", 
+    "batch_size": 256,
+    "epochs": 20,
+    "learning_rate": 0.000001,
+    "lr_patience": 30,
+    "es_patience": 30,
+    "dropout": 0.25,
+    "hflip_prob": 0.5,
+    "vflip_prob": 0.5,
+    "rotation_degrees": 60,
+    "env_features": ["wc2.1_30s_bio_1", "wc2.1_30s_bio_2", "wc2.1_30s_bio_3", "wc2.1_30s_bio_4", "wc2.1_30s_bio_5", 
+    "wc2.1_30s_bio_6", "wc2.1_30s_bio_7", "wc2.1_30s_bio_8", "wc2.1_30s_bio_9", "wc2.1_30s_bio_10", "wc2.1_30s_bio_11", 
+    "wc2.1_30s_bio_12", "wc2.1_30s_bio_13", "wc2.1_30s_bio_14", "wc2.1_30s_bio_15", "wc2.1_30s_bio_16", "wc2.1_30s_bio_17",
+    "wc2.1_30s_bio_18", "wc2.1_30s_bio_19", "ghm", "lat_norm", "lon_norm"],
+    "checkpoint_dir": "outputs\\checkpoints",
+    "log_path": "outputs\\training.log"
+}
