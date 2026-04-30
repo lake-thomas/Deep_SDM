@@ -52,8 +52,7 @@ def main():
         run([args.gdalwarp, "-overwrite", "-t_srs", args.target_crs, "-r", "bilinear", "-multi", "-wo", "NUM_THREADS=ALL_CPUS", "-co", "TILED=YES", "-co", "COMPRESS=DEFLATE", str(args.dem_input), str(dem_proj)])
 
     # Compute slope using gdaldem.
-    # Important: without -p, gdaldem slope outputs degrees.
-    # With -p, it outputs percent slope.
+    # Important: without -p flag, gdaldem slope outputs degrees.
     if not maybe_skip(slope, args.overwrite):
         run([
             args.gdaldem, "slope",
