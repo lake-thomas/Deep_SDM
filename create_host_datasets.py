@@ -969,6 +969,7 @@ def extract_naip_chip_for_point(lon: float,
 
 def extract_topo_for_naip_chip(naip_chip_fp: str, topo_sources: dict, out_fp: str | None, topo_chip_size: int):
     with rasterio.open(naip_chip_fp) as naip:
+        # Use the NAIP Chip map footprint, but represent the same footprint with topp_chip_size in pixels
         dst_transform = naip.transform * rasterio.Affine.scale(naip.width / topo_chip_size, naip.height / topo_chip_size)
         dst_crs = naip.crs
     layers = {}
@@ -1003,7 +1004,7 @@ def extract_topo_for_naip_chip(naip_chip_fp: str, topo_sources: dict, out_fp: st
             profile = naip.profile.copy()
         profile.update(count=4, dtype="float32", compress="deflate", tiled=True, width=topo_chip_size, height=topo_chip_size, transform=dst_transform)
         with rasterio.open(out_fp, "w", **profile) as dst:
-            dst.write(np.nan_to_num(stack, nan=0.0).astype(np.float32))
+            dst.write(np.nan_to_num(stack, nan=0.0).astype(np.float32)) # To Revise - writing nan as 0? But 0 values can be real data (0 elevation, 0 slope.. ) - try -9999.0 ?
     return stats
 
 
