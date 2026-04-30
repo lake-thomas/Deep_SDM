@@ -16,7 +16,7 @@ import json # noqa: E402
 import pandas as pd # noqa: E402
 import torch # noqa: E402
 from torch.utils.data import DataLoader # noqa: E402
-from model import HostImageryClimateModel, HostImageryOnlyModel, HostClimateOnlyModel, HostImageryClimateTopoModel # noqa: E402
+from model import HostImageryClimateModel, HostImageryOnlyModel, HostClimateOnlyModel, HostImageryClimateTopoModel, HostTopoOnlyModel # noqa: E402
 from datasets import HostNAIPDataset # noqa: E402
 from transforms import RandomAugment4Band # noqa: E402
 from eval_utils import test_model, plot_accuracies, plot_losses, map_model_errors # noqa: E402
@@ -88,12 +88,14 @@ def main():
 
     model_type = config.get("model_type", "image_climate") # Default to combined NAIP + Env Model
     print(model_type)
-    if model_type == "image_climate":
+    if model_type in {"image_climate", "naip_climate"}:
         model = HostImageryClimateModel(num_env_features=len(env_vars), dropout=dropout).to(device)
     elif model_type == "image_only":
         model = HostImageryOnlyModel(dropout=dropout).to(device)
     elif model_type == "climate_only":
         model = HostClimateOnlyModel(num_env_features=len(env_vars), dropout=dropout).to(device)
+    elif model_type == "topo_only":
+        model = HostTopoOnlyModel(dropout=dropout).to(device)
     elif model_type in {"naip_topo_climate", "image_topo_climate"}:
         model = HostImageryClimateTopoModel(num_env_features=len(env_vars), dropout=dropout).to(device)
     else:

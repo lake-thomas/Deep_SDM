@@ -5,7 +5,7 @@ import os
 import torch
 import torch.cuda.amp as amp
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from model import HostImageryClimateModel, HostClimateOnlyModel, HostImageryOnlyModel
+from model import HostImageryClimateModel, HostClimateOnlyModel, HostImageryOnlyModel, HostImageryClimateTopoModel, HostTopoOnlyModel
 import wandb
 
 def get_default_device():
@@ -50,8 +50,12 @@ def load_model_from_checkpoint(checkpoint_path: str, env_vars: list, hidden_dim=
         model = HostImageryOnlyModel(hidden_dim=hidden_dim, dropout=dropout).to(device)
     elif model_type == 'HostClimateOnlyModel':
         model = HostClimateOnlyModel(num_env_features=num_env_features, hidden_dim=hidden_dim, dropout=dropout).to(device)
+    elif model_type in {'HostImageryClimateTopoModel', 'HostNAIPTopoClimateModel', 'HostImageTopoClimateModel'}:
+        model = HostImageryClimateTopoModel(num_env_features=num_env_features, hidden_features=hidden_dim, dropout=dropout).to(device)
+    elif model_type == 'HostTopoOnlyModel':
+        model = HostTopoOnlyModel(hidden_dim=hidden_dim, dropout=dropout).to(device)
     else:
-        raise ValueError(f"Unknown model type: {model_type}. Expected one of ['HostImageryClimateModel', 'HostImageryOnlyModel', 'HostClimateOnlyModel']")
+        raise ValueError(f"Unknown model type: {model_type}.")
     
     optimizer = torch.optim.Adam(model.parameters())
     model.load_state_dict(checkpoint['model_state_dict'])

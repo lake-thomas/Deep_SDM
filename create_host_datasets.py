@@ -80,7 +80,7 @@ from tqdm import tqdm
 WC_VARS = [f"wc2.1_30s_bio_{i}" for i in range(1, 20)] # 19 Bioclimatic variables from WorldClim 2.1 at 30 arc-second resolution
 ALL_ENV_VARS = WC_VARS + ["ghm"] # All Env vars including GHM
 TOPO_IMAGE_BANDS = ["elevation", "slope", "northness", "eastness"]
-TOPO_SCALAR_COLUMNS = ["elev_mean","elev_sd","elev_min","elev_max","elev_p05","elev_p95","relief_p95_p05","slope_mean","slope_sd","slope_p95","northness_mean","eastness_mean","topo_valid_frac"]
+TOPO_SCALAR_COLUMNS = ["elev_mean","elev_sd","elev_min","elev_max","slope_mean","slope_sd","slope_min","slope_max","northness_mean","eastness_mean","topo_valid_frac"]
 
 
 def parse_args():
@@ -993,7 +993,7 @@ def extract_topo_for_naip_chip(naip_chip_fp: str, topo_sources: dict, out_fp: st
     elev = stack[0][valid]; slope = stack[1][valid]; n = stack[2][valid]; e = stack[3][valid]
     stats = {"topo_valid_frac": valid_frac}
     if elev.size:
-        stats.update({"elev_mean": float(np.nanmean(elev)), "elev_sd": float(np.nanstd(elev)), "elev_min": float(np.nanmin(elev)), "elev_max": float(np.nanmax(elev),), "elev_p05": float(np.nanpercentile(elev,5)), "elev_p95": float(np.nanpercentile(elev,95)), "relief_p95_p05": float(np.nanpercentile(elev,95)-np.nanpercentile(elev,5)), "slope_mean": float(np.nanmean(slope)), "slope_sd": float(np.nanstd(slope)), "slope_p95": float(np.nanpercentile(slope,95)), "northness_mean": float(np.nanmean(n)), "eastness_mean": float(np.nanmean(e))})
+        stats.update({"elev_mean": float(np.nanmean(elev)), "elev_sd": float(np.nanstd(elev)), "elev_min": float(np.nanmin(elev)), "elev_max": float(np.nanmax(elev),), "slope_mean": float(np.nanmean(slope)), "slope_sd": float(np.nanstd(slope)), "slope_min": float(np.nanmin(slope)), "slope_max": float(np.nanmax(slope)), "northness_mean": float(np.nanmean(n)), "eastness_mean": float(np.nanmean(e))})
     else:
         for c in TOPO_SCALAR_COLUMNS:
             stats[c] = np.nan

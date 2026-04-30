@@ -32,6 +32,8 @@ class HostImageClimateModelBase(torch.nn.Module):
             out = self(images)
         elif isinstance(self, HostClimateOnlyModel):
             out = self(envs)
+        elif isinstance(self, HostTopoOnlyModel):
+            out = self(batch["topo"].to(device))
         else:
             raise NotImplementedError("Unknown model type for training_step")
 
@@ -59,6 +61,8 @@ class HostImageClimateModelBase(torch.nn.Module):
             out = self(images)
         elif isinstance(self, HostClimateOnlyModel):
             out = self(envs)
+        elif isinstance(self, HostTopoOnlyModel):
+            out = self(batch["topo"].to(device))
         else:
             raise NotImplementedError("Unknown model type for validation_step")
 
@@ -230,6 +234,27 @@ class HostClimateOnlyModel(HostImageClimateModelBase):
         return out.squeeze(1) # Return shape (batch_size,)
 
 
+class HostTopoOnlyModel(HostImageClimateModelBase):
+    """
+    Topography-only model branch using ResNet18 on 4-band topographic chips.
+    """
+    def __init__(self, topo_channels=4, hidden_dim=256, dropout=0.25):
+        super().__init__()
+        self.topo_resnet = get_resnet_model(pretrained=True, in_channels=topo_channels)
+        self.topo_resnet.fc = nn.Identity()
+        self.classifier = nn.Sequential(
+            nn.Linear(512, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, topo):
+        topo_feat = self.topo_resnet(topo)
+        out = self.classifier(topo_feat)
+        return out.squeeze(1)
+
+
 
 class HostImageryClimateTopoModel(HostImageClimateModelBase):
     def __init__(self, num_env_features, naip_channels=4, topo_channels=4, topo_features=128, env_features=128, hidden_features=256, dropout=0.25):
@@ -252,3 +277,4 @@ class HostImageryClimateTopoModel(HostImageClimateModelBase):
 
 # Backward-compatible alias
 HostNAIPTopoClimateModel = HostImageryClimateTopoModel
+HostImageTopoClimateModel = HostImageryClimateTopoModel
