@@ -5,9 +5,9 @@
 Download USGS 3DEP 1/3 arc-second DEM tiles and build a mosaic.
 
 Example:
-    python download_3dep_13_dem.py ^
+    python download_3dep_dem.py ^
         --bounds -125 32 -114 43 ^
-        --out-dir "Y:/Host_NAIP_SDM/Env_Data/Topography/USGS_3DEP_13_CA_OR" ^
+        --out-dir "Y:/Host_NAIP_SDM/Env_Data/Topography_3DEP" ^
         --mosaic-name "USGS_3DEP_13_CA_OR_DEM"
 
 Notes:
@@ -15,11 +15,19 @@ Notes:
     - Optionally downloads .xml metadata.
     - Builds a GDAL VRT mosaic.
     - Optionally translates the VRT into a compressed tiled BigTIFF.
+
+3DEP Source: https://prd-tnm.s3.amazonaws.com/index.html?prefix=StagedProducts/Elevation/13/
 """
+
+import os
+
+conda_env = r"C:\Users\talake2\AppData\Local\anaconda3\envs\naip_ailanthus_env"
+os.environ["GDAL_DATA"] = os.path.join(conda_env, "Library", "share", "gdal")
+os.environ["PROJ_LIB"] = os.path.join(conda_env, "Library", "share", "proj")
+os.environ["PATH"] += os.pathsep + os.path.join(conda_env, "Library", "bin")
 
 import argparse
 import math
-import os
 import subprocess
 from pathlib import Path
 
