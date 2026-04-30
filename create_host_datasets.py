@@ -967,44 +967,159 @@ def extract_naip_chip_for_point(lon: float,
 # Dataset builders
 # ---------------------------------------------------------------------
 
-def extract_topo_for_naip_chip(naip_chip_fp: str, topo_sources: dict, out_fp: str | None, topo_chip_size: int):
+def extract_topo_for_naip_chip(
+    naip_chip_fp: str,
+    topo_sources: dict,
+    out_fp: str | None,
+    topo_chip_size: int
+):
+    """
+    Extract a topographic chip over the same spatial footprint as a NAIP chip.
+
+    Output band order:
+      1 elevation
+      2 slope
+      3 northness
+      4 eastness
+    """
+    out_nodata = -9999.0
+
     with rasterio.open(naip_chip_fp) as naip:
-        # Use the NAIP Chip map footprint, but represent the same footprint with topp_chip_size in pixels
-        dst_transform = naip.transform * rasterio.Affine.scale(naip.width / topo_chip_size, naip.height / topo_chip_size)
         dst_crs = naip.crs
+        dst_transform = naip.transform * rasterio.Affine.scale(
+            naip.width / topo_chip_size,
+            naip.height / topo_chip_size
+        )
+
     layers = {}
+
     for name in ["elevation", "slope", "northness", "eastness"]:
         src = topo_sources.get(name)
         if src is None:
             continue
-        dst = np.full((topo_chip_size, topo_chip_size), np.nan, dtype=np.float32)
-        reproject(source=rasterio.band(src,1), destination=dst, src_transform=src.transform, src_crs=src.crs, dst_transform=dst_transform, dst_crs=dst_crs, resampling=Resampling.bilinear)
-        layers[name]=dst
-    if "northness" not in layers or "eastness" not in layers:
-        aspect = topo_sources.get("aspect")
-        if aspect is not None:
-            a = np.full((topo_chip_size, topo_chip_size), np.nan, dtype=np.float32)
-            reproject(source=rasterio.band(aspect,1), destination=a, src_transform=aspect.transform, src_crs=aspect.crs, dst_transform=dst_transform, dst_crs=dst_crs, resampling=Resampling.bilinear)
-            rad = np.deg2rad(a)
-            layers.setdefault("northness", np.cos(rad))
-            layers.setdefault("eastness", np.sin(rad))
-    stack = np.stack([layers.get(k, np.full((topo_chip_size, topo_chip_size), np.nan, dtype=np.float32)) for k in TOPO_IMAGE_BANDS], axis=0)
-    valid = np.isfinite(stack[0])
+
+        dst = np.full(
+            (topo_chip_size, topo_chip_size),
+            np.nan,
+            dtype=np.float32
+        )
+
+        reproject(
+            source=rasterio.band(src, 1),
+            destination=dst,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            src_nodata=src.nodata,
+            dst_transform=dst_transform,
+            dst_crs=dst_crs,
+            dst_nodata=np.nan,
+            resampling=Resampling.bilinear
+        )
+
+        layers[name] = dst
+
+    # Fallback only if northness/eastness rasters were not supplied.
+    # Prefer precomputed northness/eastness rasters when possible.
+    if ("northness" not in layers or "eastness" not in layers) and topo_sources.get("aspect") is not None:
+        aspect = topo_sources["aspect"]
+
+        a = np.full(
+            (topo_chip_size, topo_chip_size),
+            np.nan,
+            dtype=np.float32
+        )
+
+        reproject(
+            source=rasterio.band(aspect, 1),
+            destination=a,
+            src_transform=aspect.transform,
+            src_crs=aspect.crs,
+            src_nodata=aspect.nodata,
+            dst_transform=dst_transform,
+            dst_crs=dst_crs,
+            dst_nodata=np.nan,
+            resampling=Resampling.nearest
+        )
+
+        valid_aspect = np.isfinite(a) & (a >= 0.0) & (a <= 360.0)
+        rad = np.deg2rad(a)
+
+        north = np.full_like(a, np.nan, dtype=np.float32)
+        east = np.full_like(a, np.nan, dtype=np.float32)
+
+        north[valid_aspect] = np.cos(rad[valid_aspect])
+        east[valid_aspect] = np.sin(rad[valid_aspect])
+
+        layers.setdefault("northness", north)
+        layers.setdefault("eastness", east)
+
+    missing = [k for k in TOPO_IMAGE_BANDS if k not in layers]
+    if missing:
+        raise RuntimeError(f"Missing required topo layers: {missing}")
+
+    stack = np.stack(
+        [layers[k].astype(np.float32) for k in TOPO_IMAGE_BANDS],
+        axis=0
+    )
+
+    valid = np.isfinite(stack).all(axis=0)
     valid_frac = float(valid.mean())
-    elev = stack[0][valid]; slope = stack[1][valid]; n = stack[2][valid]; e = stack[3][valid]
+
     stats = {"topo_valid_frac": valid_frac}
-    if elev.size:
-        stats.update({"elev_mean": float(np.nanmean(elev)), "elev_sd": float(np.nanstd(elev)), "elev_min": float(np.nanmin(elev)), "elev_max": float(np.nanmax(elev),), "slope_mean": float(np.nanmean(slope)), "slope_sd": float(np.nanstd(slope)), "slope_min": float(np.nanmin(slope)), "slope_max": float(np.nanmax(slope)), "northness_mean": float(np.nanmean(n)), "eastness_mean": float(np.nanmean(e))})
+
+    if valid.any():
+        elev = stack[0][valid]
+        slope = stack[1][valid]
+        north = stack[2][valid]
+        east = stack[3][valid]
+
+        stats.update({
+            "elev_mean": float(np.mean(elev)),
+            "elev_sd": float(np.std(elev)),
+            "elev_min": float(np.min(elev)),
+            "elev_max": float(np.max(elev)),
+            "slope_mean": float(np.mean(slope)),
+            "slope_sd": float(np.std(slope)),
+            "slope_min": float(np.min(slope)),
+            "slope_max": float(np.max(slope)),
+            "northness_mean": float(np.mean(north)),
+            "eastness_mean": float(np.mean(east)),
+        })
     else:
         for c in TOPO_SCALAR_COLUMNS:
             stats[c] = np.nan
+
     if out_fp is not None:
+        out_stack = np.where(np.isfinite(stack), stack, out_nodata).astype(np.float32)
+
+        profile = {
+            "driver": "GTiff",
+            "height": topo_chip_size,
+            "width": topo_chip_size,
+            "count": 4,
+            "dtype": "float32",
+            "crs": dst_crs,
+            "transform": dst_transform,
+            "nodata": out_nodata,
+            "compress": "deflate",
+            "predictor": 2,
+            "tiled": True,
+            "blockxsize": min(128, topo_chip_size),
+            "blockysize": min(128, topo_chip_size),
+            "BIGTIFF": "IF_SAFER",
+        }
+
+        # block sizes must be multiples of 16
+        if profile["blockxsize"] % 16 != 0 or profile["blockysize"] % 16 != 0:
+            profile.pop("tiled")
+            profile.pop("blockxsize")
+            profile.pop("blockysize")
+
         Path(out_fp).parent.mkdir(parents=True, exist_ok=True)
-        with rasterio.open(naip_chip_fp) as naip:
-            profile = naip.profile.copy()
-        profile.update(count=4, dtype="float32", compress="deflate", tiled=True, width=topo_chip_size, height=topo_chip_size, transform=dst_transform)
+
         with rasterio.open(out_fp, "w", **profile) as dst:
-            dst.write(np.nan_to_num(stack, nan=0.0).astype(np.float32)) # To Revise - writing nan as 0? But 0 values can be real data (0 elevation, 0 slope.. ) - try -9999.0 ?
+            dst.write(out_stack)
+
     return stats
 
 
