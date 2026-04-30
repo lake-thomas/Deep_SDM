@@ -5,7 +5,7 @@ import rasterio
 import torch
 from torch.utils.data import Dataset
 
-TOPO_SCALAR_COLUMNS = ["elev_mean","elev_sd","elev_min","elev_max","elev_p05","elev_p95","relief_p95_p05","slope_mean","slope_sd","slope_p95","northness_mean","eastness_mean","topo_valid_frac"]
+TOPO_SCALAR_COLUMNS = ["elev_mean","elev_sd","elev_min","elev_max","slope_mean","slope_sd","slope_min","slope_max","northness_mean","eastness_mean","topo_valid_frac"]
 
 class HostNAIPDataset(Dataset):
     def __init__(self, csv_path, image_base_dir, split='train', environment_features=None, transform=None, input_mode="baseline"):
@@ -50,7 +50,13 @@ class HostNAIPDataset(Dataset):
             if pd.isna(topo_path) or topo_path is None:
                 raise ValueError("Topography chip requested but topo_chip_path missing")
             topo = self._load_raster(os.path.join(self.image_base_dir, topo_path), scale255=False)
+            if topo.shape[0] != 4:
+                raise ValueError(f"Expected 4-band topography chip, got shape {topo.shape} for {topo_path}")
+            # elevation z-score fallback
+            topo[0] = (topo[0] - float(np.nanmean(topo[0]))) / (float(np.nanstd(topo[0])) + 1e-6)
+            # slope scaled to [0, 1]
             topo[1] = topo[1] / 90.0
+            topo = np.nan_to_num(topo, nan=0.0, posinf=0.0, neginf=0.0)
             batch["topo"] = torch.from_numpy(topo.astype(np.float32))
 
         return batch
