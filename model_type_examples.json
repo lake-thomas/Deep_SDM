@@ -1,0 +1,20 @@
+{
+  "valid_model_types": [
+    "image_only",
+    "tabular_only",
+    "topo_only",
+    "image_tabular",
+    "topo_tabular",
+    "image_topo",
+    "image_topo_tabular"
+  ],
+  "backward_compatible_aliases": {
+    "climate_only": "tabular_only",
+    "image_climate": "image_tabular",
+    "naip_climate": "image_tabular",
+    "topo_climate": "topo_tabular",
+    "image_topo_climate": "image_topo_tabular",
+    "naip_topo_climate": "image_topo_tabular"
+  },
+  "recommended_tabular_features": "Use \"env_features\": \"auto\" with \"include_topo_scalars\": true to include WorldClim, ghm, lat_norm, lon_norm, and available topographic scalar summaries while excluding sampling-design metadata."
+}
