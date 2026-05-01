@@ -24,7 +24,12 @@ import time #noqa: E402
 import torch #noqa: E402
 from torchvision import transforms #noqa: E402
 
-from model import HostImageryClimateModel, HostClimateOnlyModel, HostImageryOnlyModel #noqa: E402
+from model import (
+    HostImageryClimateModel,
+    HostClimateOnlyModel,
+    HostImageryOnlyModel,
+    HostImageryClimateTopoModel,
+) #noqa: E402
 from train_utils import get_default_device, load_model_from_checkpoint #noqa: E402
 
 
@@ -52,6 +57,29 @@ WORLDCLIM_STATS = {
 }
 
 # --- Updated Latitude/Longitude normalization stats for US models (Jan 2026) ---
+
+
+TOPO_IMAGE_BANDS = ["elevation", "slope", "northness", "eastness"]
+TOPO_SCALAR_COLUMNS = [
+    "elev_mean",
+    "elev_sd",
+    "elev_min",
+    "elev_max",
+    "slope_mean",
+    "slope_sd",
+    "slope_min",
+    "slope_max",
+    "northness_mean",
+    "eastness_mean",
+    "topo_valid_frac",
+]
+BASE_ENV_VARS = [
+    *[f"wc2.1_30s_bio_{i}" for i in range(1, 20)],
+    "ghm",
+    "lat_norm",
+    "lon_norm",
+]
+
 LAT_LON_STATS = {
     "lat": {"mean": 39.34043295, "std": 4.24367101},
     "lon": {"mean": -90.41125129, "std": 15.36062434},
@@ -142,6 +170,86 @@ def preload_and_normalize_rasters(worldclim_dir, ghm_path, wc_stats):
 
     return wc_rasters, ghm_raster
 
+def load_topo_norm_stats(stats_fp=None):
+    """Load optional training topography normalization stats; returns defaults if unavailable."""
+    if stats_fp and os.path.exists(stats_fp):
+        try:
+            return pd.read_json(stats_fp, typ="series").to_dict()
+        except Exception:
+            print(f"[WARN] Failed to load topo normalization stats from {stats_fp}; using defaults.")
+    return {"elevation": {"mean": 0.0, "std": 1.0}, "slope": {"mean": 0.0, "std": 1.0}}
+
+
+def normalize_topo_stack(topo_stack, topo_norm_stats=None):
+    """Normalize topo chip with training-derived stats (placeholder-friendly)."""
+    stats = topo_norm_stats or {"elevation": {"mean": 0.0, "std": 1.0}, "slope": {"mean": 0.0, "std": 1.0}}
+    topo = topo_stack.astype(np.float32, copy=True)
+    for band_name, band_idx in (("elevation", 0), ("slope", 1)):
+        mean = stats.get(band_name, {}).get("mean", 0.0)
+        std = stats.get(band_name, {}).get("std", 1.0)
+        std = std if std and std > 0 else 1.0
+        topo[band_idx] = (topo[band_idx] - mean) / std
+    return np.nan_to_num(topo, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def extract_topo_for_naip_window(naip_src, window, topo_sources, topo_chip_size=64, topo_min_valid_frac=0.90):
+    naip_win_transform = naip_src.window_transform(window)
+    naip_bounds = rasterio.windows.bounds(window, naip_src.transform)
+    dst_transform = rasterio.transform.from_bounds(*naip_bounds, topo_chip_size, topo_chip_size)
+
+    topo_stack = np.full((len(TOPO_IMAGE_BANDS), topo_chip_size, topo_chip_size), np.nan, dtype=np.float32)
+    for band_idx, band_name in enumerate(TOPO_IMAGE_BANDS):
+        src = topo_sources[band_name]
+        reproject(
+            source=rasterio.band(src, 1),
+            destination=topo_stack[band_idx],
+            src_transform=src.transform,
+            src_crs=src.crs,
+            src_nodata=src.nodata,
+            dst_transform=dst_transform,
+            dst_crs=naip_src.crs,
+            dst_nodata=np.nan,
+            resampling=Resampling.bilinear,
+        )
+
+    valid = np.isfinite(topo_stack).all(axis=0)
+    valid_frac = float(valid.mean())
+    if valid_frac < topo_min_valid_frac:
+        return topo_stack, {"topo_valid_frac": valid_frac}, False
+
+    elev_vals = topo_stack[0][valid]
+    slope_vals = topo_stack[1][valid]
+    north_vals = topo_stack[2][valid]
+    east_vals = topo_stack[3][valid]
+    topo_stats = {
+        "elev_mean": float(np.mean(elev_vals)), "elev_sd": float(np.std(elev_vals)), "elev_min": float(np.min(elev_vals)), "elev_max": float(np.max(elev_vals)),
+        "slope_mean": float(np.mean(slope_vals)), "slope_sd": float(np.std(slope_vals)), "slope_min": float(np.min(slope_vals)), "slope_max": float(np.max(slope_vals)),
+        "northness_mean": float(np.mean(north_vals)), "eastness_mean": float(np.mean(east_vals)), "topo_valid_frac": valid_frac,
+    }
+    return topo_stack, topo_stats, True
+
+
+def build_env_vector(lon, lat, wc_rasters, ghm_raster, topo_stats, env_vars):
+    wc_values = extract_worldclim_vars_for_point(lon, lat, wc_rasters)
+    ghm_value = extract_ghm_for_point(lon, lat, ghm_raster)
+    feature_map = {f"wc2.1_30s_bio_{i}": wc_values[i-1] for i in range(1, 20)}
+    feature_map.update({
+        "ghm": ghm_value,
+        "lat_norm": normalize_coord(lat, "lat"),
+        "lon_norm": normalize_coord(lon, "lon"),
+    })
+    if topo_stats:
+        feature_map.update(topo_stats)
+
+    vec = []
+    for col in env_vars:
+        val = feature_map.get(col, np.nan)
+        if not np.isfinite(val):
+            return None
+        vec.append(float(val))
+    return vec
+
+
 def enable_mc_dropout(model):
     """Enable dropout layers during inference"""
     for m in model.modules():
@@ -150,7 +258,8 @@ def enable_mc_dropout(model):
 
 @torch.inference_mode() # Disable gradient calculations for inference-only
 def run_inference_on_tile(
-    tile_fp, output_dir, model, device, image_transform, wc_rasters, ghm_raster, chip_size=256, stride=256
+    tile_fp, output_dir, model, device, image_transform, wc_rasters, ghm_raster, chip_size=256, stride=256,
+    topo_sources=None, env_vars=None, topo_chip_size=64, topo_min_valid_frac=0.90, topo_norm_stats=None,
 ):
     
     # Track inference time
@@ -177,21 +286,28 @@ def run_inference_on_tile(
         chip_iter = [(r, c) for r in rows for c in cols]
 
         # Batch buffers
-        chip_batch, env_batch, locs = [], [], []
+        chip_batch, topo_batch, env_batch, locs = [], [], [], []
+        debug_printed = False
 
         def flush_batch():
             '''
             Run model with batch inference.
             '''
 
+            if not locs:
+                return
             chips = torch.cat(chip_batch, dim=0).to(device) if chip_batch else None
             envs = torch.cat(env_batch, dim=0).to(device) if env_batch else None
+            topos = torch.cat(topo_batch, dim=0).to(device) if topo_batch else None
 
             # Monte Carlo Dropout
             T = 2 # Number of stochastic forward passes for uncertainty estimation
             probs = []
             for _ in range(T):
-                if isinstance(model, HostImageryClimateModel):
+                if isinstance(model, HostImageryClimateTopoModel):
+                    with torch.inference_mode(), torch.autocast("cuda"):
+                        p = model(chips, topos, envs)
+                elif isinstance(model, HostImageryClimateModel):
                     with torch.inference_mode(), torch.autocast("cuda"): # Mixed precision for faster inference
                         p = model(chips, envs)
                 elif isinstance(model, HostImageryOnlyModel):
@@ -218,6 +334,7 @@ def run_inference_on_tile(
 
             # Clear batch buffers
             chip_batch.clear()
+            topo_batch.clear()
             env_batch.clear()
             locs.clear()
 
@@ -232,21 +349,31 @@ def run_inference_on_tile(
             lon, lat = rasterio.warp.transform(crs, "EPSG:4326", [cx], [cy])
             lon, lat = lon[0], lat[0]
 
-            # Collect env features
-            # Use preloaded rasters instead of opening files to get Worldclim and GHM values from NAIP chip center coords
-            wc_values = extract_worldclim_vars_for_point(lon, lat, wc_rasters)
-            ghm_value = extract_ghm_for_point(lon, lat, ghm_raster)
+            topo_tensor = None
+            topo_stats = None
+            if topo_sources is not None:
+                topo_stack, topo_stats, ok = extract_topo_for_naip_window(
+                    src, window, topo_sources, topo_chip_size=topo_chip_size, topo_min_valid_frac=topo_min_valid_frac
+                )
+                if not ok:
+                    continue
+                topo_stack = normalize_topo_stack(topo_stack, topo_norm_stats=topo_norm_stats)
+                topo_tensor = torch.from_numpy(topo_stack).unsqueeze(0).float()
 
-            # Normalize coordinates (us-scale stats)
-            lat_norm = normalize_coord(lat, "lat")
-            lon_norm = normalize_coord(lon, "lon")
+            env_vector = build_env_vector(lon, lat, wc_rasters, ghm_raster, topo_stats, env_vars or BASE_ENV_VARS)
+            if env_vector is None:
+                continue
+            env_tensor = torch.tensor([env_vector], dtype=torch.float32)
 
-            env_tensor = torch.tensor([[ *wc_values, ghm_value, lat_norm, lon_norm ]], dtype=torch.float32).to(device)
-
-            # Accumulate in batch
             chip_batch.append(chip_tensor)
+            if topo_tensor is not None:
+                topo_batch.append(topo_tensor)
             env_batch.append(env_tensor)
             locs.append((row, col))
+
+            if not debug_printed:
+                print(f"[DEBUG] NAIP chip shape: {chip.shape}; topo chip shape: {None if topo_tensor is None else tuple(topo_tensor.shape)}; topo_valid_frac: {None if topo_stats is None else topo_stats.get('topo_valid_frac')}; env vector len: {len(env_vector)}")
+                debug_printed = True
 
             if len(chip_batch) >= 512: # Batch size - adjust based on GPU memory
                 flush_batch()
@@ -343,8 +470,20 @@ def main():
 
     # Environment variables used by the model
     temp_df = pd.read_csv(csv_path)
-    env_vars = [col for col in temp_df.columns if col.startswith('wc2.1_30s') or col in ['ghm', 'lat_norm', 'lon_norm']]
+    use_topography = False
+    use_topo_scalars = False
+    dem_raster_fp = None
+    slope_raster_fp = None
+    northness_raster_fp = None
+    eastness_raster_fp = None
+    topo_chip_size = 64
+    topo_min_valid_frac = 0.90
+    topo_norm_stats_fp = None
+
+    expected_env_order = BASE_ENV_VARS + (TOPO_SCALAR_COLUMNS if use_topo_scalars else [])
+    env_vars = [c for c in expected_env_order if c in temp_df.columns]
     print("Length of env_vars:", len(env_vars))
+    print("env_vars:", env_vars)
 
     # Load model from checkpoint
     checkpoint_path = r"Y:\Host_NAIP_SDM\Outputs_Host_NAIP_SDMs\tanoak_inat_image_climate_uniform_bioall_ghm_latlon_20ep_experiment_april2026\checkpoints\checkpoint_epoch_19.tar"
@@ -355,6 +494,9 @@ def main():
 
     device = get_default_device() # Use GPU
     print(f"Loaded model type: {model.__class__.__name__}")
+    print(f"Topography enabled: {use_topography}")
+    print(f"Topo rasters: dem={dem_raster_fp}, slope={slope_raster_fp}, northness={northness_raster_fp}, eastness={eastness_raster_fp}")
+    print(f"topo_chip_size={topo_chip_size}, topo_min_valid_frac={topo_min_valid_frac}")
     print(f"Loaded model from {checkpoint_path} on device {device}")
 
     image_transform = transforms.Compose([transforms.ToTensor()])
@@ -367,6 +509,18 @@ def main():
     naip_files = [os.path.join(naip_folder, f) for f in os.listdir(naip_folder) if f.endswith(".tif")]
     print(f"Found {len(naip_files)} NAIP tiles to process.")
 
+    topo_sources = None
+    topo_norm_stats = load_topo_norm_stats(topo_norm_stats_fp)
+    if use_topography:
+        if not all([dem_raster_fp, slope_raster_fp, northness_raster_fp, eastness_raster_fp]):
+            raise ValueError("Topography enabled but one or more topo raster paths are missing.")
+        topo_sources = {
+            "elevation": rasterio.open(dem_raster_fp),
+            "slope": rasterio.open(slope_raster_fp),
+            "northness": rasterio.open(northness_raster_fp),
+            "eastness": rasterio.open(eastness_raster_fp),
+        }
+
     # Loop over each NAIP tile and run inference
     for tile_fp in tqdm(naip_files, desc="Processing Tiles"): # or use missing_tile_paths for only missing tiles if restart needed
         try:
@@ -374,10 +528,17 @@ def main():
                 tile_fp, output_dir, model, device, image_transform,
                 wc_rasters = wc_rasters,
                 ghm_raster = ghm_raster,
-                chip_size=256, stride=256
+                chip_size=256, stride=256,
+                topo_sources=topo_sources, env_vars=env_vars,
+                topo_chip_size=topo_chip_size, topo_min_valid_frac=topo_min_valid_frac,
+                topo_norm_stats=topo_norm_stats,
             )
         except Exception as e:
             print(f"[ERROR] Failed on {tile_fp}: {e}")
+
+    if topo_sources is not None:
+        for ds in topo_sources.values():
+            ds.close()
 
 
 if __name__ == "__main__":
