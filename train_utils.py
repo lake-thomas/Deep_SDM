@@ -71,7 +71,7 @@ def load_model_from_checkpoint(
         pretrained_image=pretrained_image,
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters())
+    optimizer = torch.optim.AdamW(model.parameters())
     model.load_state_dict(checkpoint["model_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     model.eval()
@@ -122,7 +122,7 @@ def fit(
     scheduler = ReduceLROnPlateau(
         optimizer,
         mode="min",
-        factor=0.1,
+        factor=0.5,
         patience=lr_patience,
     )
     scaler = torch.cuda.amp.GradScaler(enabled=fp16_enabled)

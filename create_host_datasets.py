@@ -188,7 +188,6 @@ DEFAULT_TOPO_NORM_STATS_3DEP_30M = {
     },
 }
 
-
 # ---------------------------------------------------------------------
 # Argument parsing and config setup
 # ---------------------------------------------------------------------
@@ -246,6 +245,8 @@ def parse_args() -> argparse.Namespace:
     
     parser.add_argument("--block-size-m", type=float, default=200000, help="Spatial block size in meters for block CV. Default = 200 km.")
 
+    parser.add_argument("--spatial-thin-distance-m", type=float, default=800.0, help="Minimum allowed distance in meters between any presence or background samples after the combined PA dataset is built.")
+
     # TOPOGRAPHIC COVARIATE SETTINGS
     parser.add_argument("--topo-mode", choices=["none", "scalar", "chip", "both"], default="none", help="Whether to extract no topography, scalar summaries, topo chips, or both.")
 
@@ -302,6 +303,9 @@ def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
 
     if args.background_multiplier <= 0:
         parser.error("--background-multiplier must be > 0.")
+
+    if args.spatial_thin_distance_m < 0:
+        parser.error("--spatial-thin-distance-m must be >= 0. Use 0 to disable adjacent point thinning.")
 
     if args.topo_mode != "none":
         if args.topo_chip_size <= 0:
@@ -714,6 +718,92 @@ def sample_background_points(
 
     return background_sampled
 
+def spatially_thin_points(
+    points_gdf: gpd.GeoDataFrame,
+    min_distance_m: float,
+    seed: int,
+    projected_crs: str = "EPSG:5070",
+) -> gpd.GeoDataFrame:
+    """
+    Greedily thin all points so no two retained samples are within min_distance_m.
+
+    This is intentionally simple and conservative. It treats presences and
+    backgrounds together as one pool, so class balance may change slightly after
+    thinning. That is acceptable here because the goal is to avoid inflated
+    performance metrics caused by overlapping NAIP/topographic chips.
+
+    Parameters
+    ----------
+    points_gdf : GeoDataFrame
+        Combined presence/background points with a valid CRS.
+    min_distance_m : float
+        Minimum allowed distance between retained sample centers, in meters.
+        Use 0 to disable thinning.
+    seed : int
+        Random seed controlling the order in which candidate samples are visited.
+    projected_crs : str
+        Projected CRS used for distance calculations. EPSG:5070 is appropriate
+        for CONUS-scale analyses.
+
+    Returns
+    -------
+    GeoDataFrame
+        Spatially thinned points in the original CRS.
+    """
+    if points_gdf.empty:
+        return points_gdf.copy()
+
+    if min_distance_m <= 0:
+        out = points_gdf.copy()
+        out["spatial_thin_distance_m"] = 0.0
+        return out
+
+    if points_gdf.crs is None:
+        raise ValueError("points_gdf must have a CRS before spatial thinning.")
+
+    gdf = points_gdf.copy().reset_index(drop=True)
+    gdf_proj = gdf.to_crs(projected_crs)
+
+    rng = np.random.default_rng(seed)
+    order = np.arange(len(gdf_proj))
+    rng.shuffle(order)
+
+    sindex = gdf_proj.sindex
+
+    available = np.ones(len(gdf_proj), dtype=bool)
+    keep_indices: list[int] = []
+
+    for idx in order:
+        if not available[idx]:
+            continue
+
+        keep_indices.append(int(idx))
+
+        # Drop all currently available points within the exclusion radius.
+        exclusion_geom = gdf_proj.geometry.iloc[idx].buffer(min_distance_m)
+        nearby = sindex.query(exclusion_geom, predicate="intersects")
+        available[nearby] = False
+
+    keep_indices = sorted(keep_indices)
+
+    out = gdf.iloc[keep_indices].copy().reset_index(drop=True)
+    out["spatial_thin_distance_m"] = float(min_distance_m)
+
+    print(
+        "Spatial thinning complete: "
+        f"retained {len(out):,} of {len(gdf):,} samples "
+        f"({len(gdf) - len(out):,} removed) using "
+        f"{min_distance_m:,.1f} m minimum spacing."
+    )
+
+    print("Class counts before spatial thinning:")
+    print(gdf["presence"].value_counts().sort_index())
+
+    print("Class counts after spatial thinning:")
+    print(out["presence"].value_counts().sort_index())
+
+    return gpd.GeoDataFrame(out, geometry="geometry", crs=points_gdf.crs)
+
 def attach_naip_filename_or_url(
     points_gdf: gpd.GeoDataFrame,
     tileindex_gdf: gpd.GeoDataFrame,
@@ -769,7 +859,6 @@ def build_presence_background_points(
     combined = combined.drop_duplicates(subset=["lat", "lon", "presence"])
 
     return combined
-
 
 # ---------------------------------------------------------------------
 # Split helpers
@@ -1473,6 +1562,7 @@ def build_dataset_csv(
             "url",
             "block_id",
             "fold",
+            "spatial_thin_distance_m",
         ]:
             if optional_col in row.index:
                 rec[optional_col] = row.get(optional_col)
@@ -1597,11 +1687,20 @@ def process_species(
     print(f"Sampled {len(backgrounds):,} background points")
 
     pa_points = build_presence_background_points(
-        presence_gdf=presences,
-        background_gdf=backgrounds,
-        tileindex_gdf=tileindex_gdf,
+    presence_gdf=presences,
+    background_gdf=backgrounds,
+    tileindex_gdf=tileindex_gdf,)
+
+    print(f"Combined presence/background dataset before spatial thinning: {len(pa_points):,}")
+
+    pa_points = spatially_thin_points(
+        points_gdf=pa_points,
+        min_distance_m=args.spatial_thin_distance_m,
+        seed=args.seed,
+        projected_crs="EPSG:5070",
     )
-    print(f"Combined presence/background dataset: {len(pa_points):,}")
+
+    print(f"Combined presence/background dataset after spatial thinning: {len(pa_points):,}")
 
     pb_points_csv = occurrences_root / f"{species_label}_US_Presence_Background_Points.csv"
     pa_points.drop(columns=["geometry"]).to_csv(pb_points_csv, index=False)

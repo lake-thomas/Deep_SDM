@@ -34,6 +34,7 @@ from train_utils import get_default_device, load_model_from_checkpoint #noqa: E4
 
 
 # --- Updated WorldClim normalization stats for US models (Jan 2026) ---
+
 WORLDCLIM_STATS = {
     "wc2.1_30s_bio_1":  {"mean": 10.9748, "std": 5.0872},
     "wc2.1_30s_bio_2":  {"mean": 13.6538, "std": 2.1714},
@@ -57,9 +58,45 @@ WORLDCLIM_STATS = {
 }
 
 # --- Updated Latitude/Longitude normalization stats for US models (Jan 2026) ---
+LAT_LON_STATS = {
+    "lat": {"mean": 39.34043295, "std": 4.24367101},
+    "lon": {"mean": -90.41125129, "std": 15.36062434},
+}
 
+# --- Updated Topography normalization stats for US models (Jan 2026) ---
+TOPO_STATS = {
+  "elevation": {
+    "mean": 726.2603002867634,
+    "std": 726.1498602385226,
+    "min": -137.69664001464844,
+    "max": 4412.6640625,
+    "count": 9540833243
+  },
+  "slope": {
+    "mean": 4.919028345565722,
+    "std": 7.374072011456101,
+    "min": 0.0,
+    "max": 85.33364868164062,
+    "count": 9540832992
+  },
+  "northness": {
+    "mean": -0.02528306975286833,
+    "std": 0.6941432105633398,
+    "min": -1.0,
+    "max": 1.0,
+    "count": 8784324997
+  },
+  "eastness": {
+    "mean": 0.02390086174964258,
+    "std": 0.7189956314423461,
+    "min": -1.0,
+    "max": 1.0,
+    "count": 8784324997
+  }
+}
 
 TOPO_IMAGE_BANDS = ["elevation", "slope", "northness", "eastness"]
+
 TOPO_SCALAR_COLUMNS = [
     "elev_mean",
     "elev_sd",
@@ -73,6 +110,7 @@ TOPO_SCALAR_COLUMNS = [
     "eastness_mean",
     "topo_valid_frac",
 ]
+
 BASE_ENV_VARS = [
     *[f"wc2.1_30s_bio_{i}" for i in range(1, 20)],
     "ghm",
@@ -80,10 +118,6 @@ BASE_ENV_VARS = [
     "lon_norm",
 ]
 
-LAT_LON_STATS = {
-    "lat": {"mean": 39.34043295, "std": 4.24367101},
-    "lon": {"mean": -90.41125129, "std": 15.36062434},
-}
 
 
 def normalize_coord(value, varname):
