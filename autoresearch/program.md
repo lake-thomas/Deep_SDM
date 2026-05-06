@@ -50,18 +50,30 @@ Deep_SDM currently supports seven predictor-family combinations:
 Optimize the benchmark's configured primary metric. The recommended default is:
 
 ```text
-mean_val_mcc
+best_val_mcc
 ```
+Use the best validation MCC reached across training epochs as the primary ratchet metric, not only the final-epoch MCC. This is important because multimodal models may peak before the final epoch, especially when validation loss increases later in training.
+
+Each trial result should track both best-epoch and final-epoch behavior:
+
+- best_val_mcc
+- best_epoch
+- best_epoch_val_loss
+- best_epoch_val_auc
+- final_val_mcc
+- final_val_loss
+- final_val_auc
 
 MCC is preferred over raw accuracy because it gives a more balanced view of false positives and false negatives in binary species distribution modeling.
 
 Tie-breakers, in order:
 
-1. higher `mean_val_auc`
-2. higher `mean_val_sensitivity`
-3. higher `mean_val_specificity`
-4. lower `mean_val_loss`
-5. simpler model / fewer new assumptions
+1. higher `best_val_auc`
+2. higher `best_val_sensitivity`
+3. higher `best_val_specificity`
+4. lower `best_epoch_val_loss`
+5. higher `final_val_mcc`
+6. simpler model / fewer new assumptions
 
 Never use the test split to guide edits. Test results are for final human review only.
 
