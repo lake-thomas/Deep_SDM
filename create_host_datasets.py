@@ -69,7 +69,7 @@ Optional:
 Example: single species with normalized topography
 --------------------------------------------------
 
-python Host_NAIP_SDM_Dataset_Builder_TopoNorm.py ^
+python create_host_datasets.py ^
     --occurrence-file "Y:/Promit_Host_Occurrences/Fully_thinned_data/notholithocarpus_densiflorus_thinned.csv" ^
     --output-root "Y:/Host_NAIP_SDM" ^
     --tileindex "Y:/Host_NAIP_SDM/NAIP_Imagery_Tile_Indices/NAIP_US_State_Tile_Indices_URL_Paths_jan26.shp" ^
@@ -92,10 +92,11 @@ python Host_NAIP_SDM_Dataset_Builder_TopoNorm.py ^
 from __future__ import annotations
 import os
 
-conda_env = r"C:\Users\talake2\AppData\Local\anaconda3\envs\naip_ailanthus_env"
-os.environ["GDAL_DATA"] = os.path.join(conda_env, "Library", "share", "gdal")
-os.environ["PROJ_LIB"] = os.path.join(conda_env, "Library", "share", "proj")
-os.environ["PATH"] += os.pathsep + os.path.join(conda_env, "Library", "bin")
+if os.name == "nt":
+    conda_env = r"C:\Users\talake2\AppData\Local\anaconda3\envs\naip_ailanthus_env"
+    os.environ["GDAL_DATA"] = os.path.join(conda_env, "Library", "share", "gdal")
+    os.environ["PROJ_LIB"] = os.path.join(conda_env, "Library", "share", "proj")
+    os.environ["PATH"] += os.pathsep + os.path.join(conda_env, "Library", "bin")
 
 
 import argparse
@@ -116,6 +117,7 @@ from rasterio.merge import merge
 from rasterio.transform import from_origin
 from rasterio.warp import reproject
 from rasterio.windows import Window
+from scipy.spatial import cKDTree
 from shapely.geometry import Point, box
 from tqdm import tqdm
 
@@ -204,11 +206,19 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--species-name-col", type=str, default="species")
     
-    parser.add_argument("--lat-col", type=str, default="decimalLatitude")
+    parser.add_argument("--lat-col", type=str, default="auto", help="Latitude column. Use auto to detect decimalLatitude/latitude/lat.")
     
-    parser.add_argument("--lon-col", type=str, default="decimalLongitude")
+    parser.add_argument("--lon-col", type=str, default="auto", help="Longitude column. Use auto to detect decimalLongitude/longitude/lon.")
     
     parser.add_argument("--source-col", type=str, default="Source", help="Optional source column, for example iNaturalist or GBIF.")
+
+    parser.add_argument("--coordinate-uncertainty-col", type=str, default="auto", help="Optional coordinate uncertainty column. Use auto to detect common GBIF/iNat names.")
+
+    parser.add_argument("--max-coordinate-uncertainty-m", type=float, default=None, help="Optional maximum coordinate uncertainty in meters. Rows above this value are removed before thinning.")
+
+    parser.add_argument("--max-presences-after-thinning", type=int, default=None, help="Optional cap on presences after WorldClim-cell thinning. Use for small bounded validation runs before full dataset generation.")
+
+    parser.add_argument("--plan-only", action="store_true", help="Inspect occurrence inputs and print planned output paths without loading rasters, creating directories, or writing files.")
 
     # SHARED OUTPUTS AND RESOURCES
     parser.add_argument("--output-root", type=str, required=True, help="Root output directory.")
@@ -229,6 +239,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--background-multiplier", type=float, default=3.0, help="Oversampling multiplier when drawing candidate background points.")
 
     parser.add_argument("--background-max-sampling-rounds", type=int, default=25, help="Maximum candidate-sampling rounds before failing. Increase if the doughnut sampling area is fragmented or very small.")
+
+    parser.add_argument("--background-sampling-mode", choices=["radial", "polygon"], default="radial", help="Codex speedup: radial samples candidates around presences and enforces nearest-presence distance with a KD-tree; polygon uses the original union/difference doughnut polygon.")
+
+    parser.add_argument("--max-naip-footprint-union-tiles", type=int, default=50000, help="Maximum downloaded tile rows for building one NAIP footprint union during background sampling. Larger tile indexes skip the union and rely on chip extraction to enforce NAIP availability.")
+
+    parser.add_argument("--worldclim-stats-json", type=str, default=None, help="Optional JSON cache for WorldClim normalization stats. If it exists, it is loaded; otherwise stats are computed and written there.")
+
+    parser.add_argument("--allow-existing-output", action="store_true", help="Allow writing into non-empty output directories or existing point CSVs. By default this script fails before overwriting versioned outputs.")
     
     # PROCESSING SETTINGS
     parser.add_argument("--chip-size", type=int, default=256, help="NAIP chip size in pixels. At 2 m resolution, 256 pixels is approximately 512 m.")
@@ -307,6 +325,9 @@ def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     if args.spatial_thin_distance_m < 0:
         parser.error("--spatial-thin-distance-m must be >= 0. Use 0 to disable adjacent point thinning.")
 
+    if args.max_presences_after_thinning is not None and args.max_presences_after_thinning <= 0:
+        parser.error("--max-presences-after-thinning must be > 0 when supplied.")
+
     if args.topo_mode != "none":
         if args.topo_chip_size <= 0:
             parser.error("--topo-chip-size must be > 0 when --topo-mode is not none.")
@@ -340,6 +361,12 @@ def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
 
+def geometry_union(geometries):
+    """Return a union geometry across GeoPandas versions."""
+    if hasattr(geometries, "union_all"):
+        return geometries.union_all()
+    return geometries.unary_union
+
 def slugify_species_name(name: str) -> str:
     """Convert species name to a consistent filesystem-safe slug."""
     name = str(name).strip().lower()
@@ -356,6 +383,52 @@ def infer_species_slug_from_filename(csv_path: Path) -> str:
     stem = re.sub(r"_thinned$", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"_thin.*$", "", stem, flags=re.IGNORECASE)
     return slugify_species_name(stem)
+
+def planned_output_paths(csv_path: Path, output_root: str, chip_size: int) -> dict[str, Path]:
+    """Return the versioned output paths for a species without creating them."""
+    species_slug = infer_species_slug_from_filename(csv_path)
+    species_label = display_name_from_slug(species_slug)
+    project_root = Path(output_root)
+    datasets_root = project_root / f"{species_label}_Datasets"
+    occurrences_root = project_root / f"{species_label}_US_Occurrences"
+    uniform_name = f"{species_label}_US_Uniform_PA_NAIP_{chip_size}_topo_norm_may2026"
+    blockcv_name = f"{species_label}_US_BlockCV_PA_NAIP_{chip_size}_topo_norm_may2026"
+
+    return {
+        "datasets_root": datasets_root,
+        "occurrences_root": occurrences_root,
+        "presence_background_points": occurrences_root / f"{species_label}_US_Presence_Background_Points.csv",
+        "uniform_root": datasets_root / uniform_name,
+        "blockcv_root": datasets_root / blockcv_name,
+    }
+
+def resolve_column(
+    columns,
+    requested: str | None,
+    candidates: list[str],
+    label: str,
+    required: bool,
+) -> str | None:
+    """Resolve an input CSV column with common aliases."""
+    column_set = set(columns)
+
+    if requested and requested != "auto":
+        if requested in column_set:
+            return requested
+        if required:
+            raise ValueError(f"Requested {label} column '{requested}' is missing.")
+        return None
+
+    for candidate in candidates:
+        if candidate in column_set:
+            return candidate
+
+    if required:
+        raise ValueError(
+            f"Could not auto-detect {label} column. Tried: {candidates}. "
+            f"Available columns: {list(columns)}"
+        )
+    return None
 
 # ---------------------------------------------------------------------
 # I/O and geometry helpers
@@ -434,13 +507,46 @@ def load_occurrence_csv(
     lat_col: str,
     lon_col: str,
     source_col: str,
+    coordinate_uncertainty_col: str | None,
+    max_coordinate_uncertainty_m: float | None,
 ) -> gpd.GeoDataFrame:
     """Load a species occurrence CSV and standardize the required columns."""
     df = pd.read_csv(csv_path)
 
-    missing = [c for c in [lat_col, lon_col] if c not in df.columns]
-    if missing:
-        raise ValueError(f"{csv_path.name} is missing required columns: {missing}")
+    lat_col = resolve_column(
+        df.columns,
+        lat_col,
+        ["decimalLatitude", "latitude", "lat", "Lat", "LAT"],
+        "latitude",
+        required=True,
+    )
+    lon_col = resolve_column(
+        df.columns,
+        lon_col,
+        ["decimalLongitude", "longitude", "lon", "Long", "LON"],
+        "longitude",
+        required=True,
+    )
+    uncertainty_col = resolve_column(
+        df.columns,
+        coordinate_uncertainty_col,
+        [
+            "coordinateUncertaintyInMeters",
+            "coordinate_uncertainty_m",
+            "coordinate_uncertainty",
+            "coordinateUncertainty",
+            "uncertainty",
+        ],
+        "coordinate uncertainty",
+        required=False,
+    )
+
+    print(
+        "Occurrence schema: "
+        f"lat='{lat_col}', lon='{lon_col}', "
+        f"source='{source_col if source_col in df.columns else 'unknown'}', "
+        f"coordinate_uncertainty='{uncertainty_col or 'not detected'}'"
+    )
 
     df = df.copy().rename(columns={lat_col: "lat", lon_col: "lon"})
 
@@ -453,6 +559,22 @@ def load_occurrence_csv(
         df["source"] = df[source_col].fillna("unknown")
     else:
         df["source"] = "unknown"
+
+    if uncertainty_col is not None:
+        df["coordinate_uncertainty_m"] = pd.to_numeric(df[uncertainty_col], errors="coerce")
+        before_uncertainty = len(df)
+        if max_coordinate_uncertainty_m is not None:
+            df = df[
+                df["coordinate_uncertainty_m"].notna()
+                & (df["coordinate_uncertainty_m"] <= max_coordinate_uncertainty_m)
+            ].copy()
+            print(
+                "After coordinate uncertainty filter "
+                f"<= {max_coordinate_uncertainty_m:g} m: {len(df):,} "
+                f"({before_uncertainty - len(df):,} removed)"
+            )
+    else:
+        df["coordinate_uncertainty_m"] = np.nan
 
     df = df.dropna(subset=["lat", "lon"]).copy()
     df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
@@ -550,6 +672,127 @@ def random_points_in_polygon(polygon, n: int, seed: int, max_batches: int = 1000
 
     return points[:n]
 
+def sample_background_points_radial(
+    presence_gdf: gpd.GeoDataFrame,
+    wc_reference_raster_fp: str,
+    background_multiplier: float,
+    seed: int,
+    buffer_km: float,
+    inner_buffer_km: float = 0.0,
+    max_sampling_rounds: int = 25,
+) -> gpd.GeoDataFrame:
+    """
+    Fast doughnut background sampling for large national host datasets.
+
+    Candidates are generated around randomly selected presences in EPSG:5070,
+    then a KD-tree enforces the nearest-presence distance constraint. This
+    avoids constructing one huge union/difference polygon from all presence
+    buffers, which is the slowest step for high-record hosts.
+    """
+    n_background = len(presence_gdf)
+    if n_background == 0:
+        raise ValueError("No presence points available after thinning.")
+
+    inner_m = inner_buffer_km * 1000.0
+    outer_m = buffer_km * 1000.0
+    if inner_m >= outer_m:
+        raise ValueError("inner_buffer_km must be smaller than buffer_km.")
+
+    with rasterio.open(wc_reference_raster_fp) as src:
+        affine = src.transform
+        raster_crs = src.crs
+
+    pres_for_cells = presence_gdf.to_crs(raster_crs).copy()
+    rows_pr, cols_pr = rasterio.transform.rowcol(
+        affine,
+        pres_for_cells.geometry.x.values,
+        pres_for_cells.geometry.y.values,
+    )
+    presence_cells = {f"{r}_{c}" for r, c in zip(rows_pr, cols_pr)}
+
+    presence_proj = presence_gdf.to_crs("EPSG:5070").copy()
+    presence_xy = np.column_stack([presence_proj.geometry.x.values, presence_proj.geometry.y.values])
+    presence_tree = cKDTree(presence_xy)
+
+    n_candidates_per_round = int(math.ceil(n_background * background_multiplier))
+    valid_candidate_chunks = []
+    pooled = None
+
+    for round_i in range(max_sampling_rounds):
+        rng = np.random.default_rng(seed + round_i)
+        origin_idx = rng.integers(0, len(presence_xy), size=n_candidates_per_round)
+        origins = presence_xy[origin_idx]
+        angles = rng.uniform(0.0, 2.0 * np.pi, size=n_candidates_per_round)
+        # Area-uniform radial distance within the annulus.
+        distances = np.sqrt(rng.uniform(inner_m ** 2, outer_m ** 2, size=n_candidates_per_round))
+        candidate_xy = np.column_stack([
+            origins[:, 0] + distances * np.cos(angles),
+            origins[:, 1] + distances * np.sin(angles),
+        ])
+
+        nearest_m, _ = presence_tree.query(candidate_xy, k=1)
+        keep = (nearest_m >= inner_m) & (nearest_m <= outer_m)
+        if not np.any(keep):
+            continue
+
+        candidates_proj = gpd.GeoDataFrame(
+            {"nearest_presence_km": nearest_m[keep] / 1000.0},
+            geometry=gpd.points_from_xy(candidate_xy[keep, 0], candidate_xy[keep, 1]),
+            crs="EPSG:5070",
+        )
+
+        candidates = candidates_proj.to_crs(raster_crs)
+        rows_bg, cols_bg = rasterio.transform.rowcol(
+            affine,
+            candidates.geometry.x.values,
+            candidates.geometry.y.values,
+        )
+        candidates["cell_id"] = [f"{r}_{c}" for r, c in zip(rows_bg, cols_bg)]
+        candidates = candidates[~candidates["cell_id"].isin(presence_cells)].copy()
+
+        if not candidates.empty:
+            valid_candidate_chunks.append(candidates)
+
+        if valid_candidate_chunks:
+            pooled = pd.concat(valid_candidate_chunks, ignore_index=True)
+            pooled = gpd.GeoDataFrame(pooled, geometry="geometry", crs=raster_crs)
+            pooled = (
+                pooled.groupby("cell_id", group_keys=False)
+                .apply(lambda x: x.sample(n=1, random_state=seed))
+                .reset_index(drop=True)
+            )
+
+            print(
+                f"Radial sampling round {round_i + 1}: "
+                f"{len(pooled):,} unique valid background cells"
+            )
+
+            if len(pooled) >= n_background:
+                break
+    else:
+        available = len(pooled) if pooled is not None else 0
+        raise RuntimeError(
+            f"Only {available} valid unique radial background cells available after "
+            f"{max_sampling_rounds} rounds, but {n_background} are needed. "
+            "Increase --background-multiplier or --background-max-sampling-rounds."
+        )
+
+    background_sampled = pooled.sample(n=n_background, random_state=seed).copy()
+    background_sampled = background_sampled.to_crs("EPSG:4326")
+    background_sampled["lat"] = background_sampled.geometry.y
+    background_sampled["lon"] = background_sampled.geometry.x
+    background_sampled["source"] = "background"
+    background_sampled["background_sampling_rule"] = f"radial_doughnut_{inner_buffer_km:g}_{buffer_km:g}_km"
+
+    print(
+        "Final radial background nearest-presence distance summary, km: "
+        f"min={background_sampled['nearest_presence_km'].min():.2f}, "
+        f"median={background_sampled['nearest_presence_km'].median():.2f}, "
+        f"max={background_sampled['nearest_presence_km'].max():.2f}"
+    )
+
+    return background_sampled
+
 def sample_background_points(
     presence_gdf: gpd.GeoDataFrame,
     downloaded_tiles_gdf: gpd.GeoDataFrame,
@@ -559,6 +802,7 @@ def sample_background_points(
     buffer_km: float,
     inner_buffer_km: float = 0.0,
     max_sampling_rounds: int = 25,
+    max_naip_footprint_union_tiles: int = 50000,
 ) -> gpd.GeoDataFrame:
     """
     Sample one background point per presence using an optional doughnut method.
@@ -597,9 +841,9 @@ def sample_background_points(
     outer_buffer_m = buffer_km * 1000.0
     inner_buffer_m = inner_buffer_km * 1000.0
 
-    outer_buffer_proj = presence_proj.buffer(outer_buffer_m).union_all()
+    outer_buffer_proj = geometry_union(presence_proj.buffer(outer_buffer_m))
     if inner_buffer_km > 0:
-        inner_buffer_proj = presence_proj.buffer(inner_buffer_m).union_all()
+        inner_buffer_proj = geometry_union(presence_proj.buffer(inner_buffer_m))
         sampling_zone_proj = outer_buffer_proj.difference(inner_buffer_proj)
     else:
         sampling_zone_proj = outer_buffer_proj
@@ -614,9 +858,19 @@ def sample_background_points(
         gpd.GeoSeries([sampling_zone_proj], crs="EPSG:5070").to_crs("EPSG:4326").iloc[0]
     )
 
-    # 2. Restrict to downloaded NAIP footprint.
-    footprint = downloaded_tiles_gdf.to_crs("EPSG:4326").geometry.union_all()
-    sampling_area = footprint.intersection(sampling_zone_wgs84).buffer(0)
+    # 2. Restrict to downloaded NAIP footprint when feasible. For national
+    # tile indexes, unioning hundreds of thousands of tile polygons can dominate
+    # runtime. In that case, sample from the presence doughnut and let the later
+    # NAIP chip extraction step enforce downloaded-tile availability.
+    if len(downloaded_tiles_gdf) <= max_naip_footprint_union_tiles:
+        footprint = geometry_union(downloaded_tiles_gdf.to_crs("EPSG:4326").geometry)
+        sampling_area = footprint.intersection(sampling_zone_wgs84).buffer(0)
+    else:
+        print(
+            f"Skipping expensive NAIP footprint union for {len(downloaded_tiles_gdf):,} "
+            "downloaded tiles; NAIP chip extraction will enforce tile availability."
+        )
+        sampling_area = sampling_zone_wgs84.buffer(0)
 
     if sampling_area.is_empty:
         raise RuntimeError(
@@ -700,7 +954,7 @@ def sample_background_points(
     background_sampled = pooled.sample(n=n_background, random_state=seed).copy()
 
     bg_for_dist = background_sampled.to_crs("EPSG:5070").copy()
-    presence_union_proj = presence_proj.geometry.union_all()
+    presence_union_proj = geometry_union(presence_proj.geometry)
     background_sampled["nearest_presence_km"] = bg_for_dist.geometry.distance(presence_union_proj) / 1000.0
 
     background_sampled = background_sampled.to_crs("EPSG:4326")
@@ -842,6 +1096,7 @@ def build_presence_background_points(
 
     keep_cols = ["species", "source", "lat", "lon", "presence", "geometry"]
     for extra in [
+        "coordinate_uncertainty_m",
         "filename",
         "url",
         "cell_id",
@@ -1017,6 +1272,26 @@ def compute_worldclim_stats(worldclim_folder: str, study_geom, buffer_deg: float
                 raise RuntimeError(f"Invalid std for {varname}: {std}")
 
             stats[varname] = {"mean": mean, "std": std}
+
+    return stats
+
+def load_or_compute_worldclim_stats(args: argparse.Namespace, downloaded_tiles_gdf: gpd.GeoDataFrame) -> dict:
+    """Load cached WorldClim stats when available, otherwise compute and cache."""
+    cache_fp = Path(args.worldclim_stats_json) if args.worldclim_stats_json else None
+    if cache_fp is not None and cache_fp.exists():
+        print(f"Loading cached WorldClim normalization statistics from {cache_fp}")
+        with open(cache_fp, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    print("Computing WorldClim normalization statistics once from downloaded NAIP footprint...")
+    downloaded_union = geometry_union(downloaded_tiles_gdf.geometry)
+    stats = compute_worldclim_stats(args.worldclim_folder, downloaded_union)
+
+    if cache_fp is not None:
+        cache_fp.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_fp, "w", encoding="utf-8") as f:
+            json.dump(stats, f, indent=2)
+        print(f"Saved WorldClim normalization statistics cache to {cache_fp}")
 
     return stats
 
@@ -1556,6 +1831,7 @@ def build_dataset_csv(
         }
 
         for optional_col in [
+            "coordinate_uncertainty_m",
             "nearest_presence_km",
             "background_sampling_rule",
             "filename",
@@ -1622,18 +1898,29 @@ def process_species(
     print("=" * 80)
 
     # Output roots
-    project_root = Path(args.output_root)
-    datasets_root = project_root / f"{species_label}_Datasets"
-    occurrences_root = project_root / f"{species_label}_US_Occurrences"
+    paths = planned_output_paths(csv_path, args.output_root, args.chip_size)
+    datasets_root = paths["datasets_root"]
+    occurrences_root = paths["occurrences_root"]
+    uniform_root = paths["uniform_root"]
+    blockcv_root = paths["blockcv_root"]
+    pb_points_csv = paths["presence_background_points"]
+
+    conflicts = []
+    if pb_points_csv.exists():
+        conflicts.append(pb_points_csv)
+    for output_dir in [uniform_root, blockcv_root]:
+        if output_dir.exists() and any(output_dir.iterdir()):
+            conflicts.append(output_dir)
+    if conflicts and not args.allow_existing_output:
+        conflict_list = "\n  - ".join(str(p) for p in conflicts)
+        raise FileExistsError(
+            "Refusing to write into existing output artifact(s). "
+            "Use a new --output-root or pass --allow-existing-output after review.\n"
+            f"  - {conflict_list}"
+        )
 
     datasets_root.mkdir(parents=True, exist_ok=True)
     occurrences_root.mkdir(parents=True, exist_ok=True)
-
-    uniform_name = f"{species_label}_US_Uniform_PA_NAIP_{args.chip_size}_topo_norm_may2026"
-    blockcv_name = f"{species_label}_US_BlockCV_PA_NAIP_{args.chip_size}_topo_norm_may2026"
-
-    uniform_root = datasets_root / uniform_name
-    blockcv_root = datasets_root / blockcv_name
     uniform_root.mkdir(parents=True, exist_ok=True)
     blockcv_root.mkdir(parents=True, exist_ok=True)
 
@@ -1660,6 +1947,8 @@ def process_species(
         lat_col=args.lat_col,
         lon_col=args.lon_col,
         source_col=args.source_col,
+        coordinate_uncertainty_col=args.coordinate_uncertainty_col,
+        max_coordinate_uncertainty_m=args.max_coordinate_uncertainty_m,
     )
 
     print(f"Loaded {len(occurrences):,} raw occurrences from {csv_path.name}")
@@ -1674,9 +1963,26 @@ def process_species(
     )
     print(f"After WorldClim-cell thinning: {len(presences):,}")
 
+    if args.max_presences_after_thinning is not None and len(presences) > args.max_presences_after_thinning:
+        before_cap = len(presences)
+        presences = presences.sample(n=args.max_presences_after_thinning, random_state=args.seed).copy()
+        print(
+            "Applied bounded validation cap after WorldClim-cell thinning: "
+            f"{len(presences):,} of {before_cap:,} presences retained"
+        )
+
     backgrounds = sample_background_points(
         presence_gdf=presences,
         downloaded_tiles_gdf=downloaded_tiles_gdf,
+        wc_reference_raster_fp=wc_reference,
+        background_multiplier=args.background_multiplier,
+        buffer_km=args.background_buffer_km,
+        inner_buffer_km=args.background_inner_buffer_km,
+        max_sampling_rounds=args.background_max_sampling_rounds,
+        max_naip_footprint_union_tiles=args.max_naip_footprint_union_tiles,
+        seed=args.seed,
+    ) if args.background_sampling_mode == "polygon" else sample_background_points_radial(
+        presence_gdf=presences,
         wc_reference_raster_fp=wc_reference,
         background_multiplier=args.background_multiplier,
         buffer_km=args.background_buffer_km,
@@ -1702,7 +2008,6 @@ def process_species(
 
     print(f"Combined presence/background dataset after spatial thinning: {len(pa_points):,}")
 
-    pb_points_csv = occurrences_root / f"{species_label}_US_Presence_Background_Points.csv"
     pa_points.drop(columns=["geometry"]).to_csv(pb_points_csv, index=False)
     print(f"Saved: {pb_points_csv}")
 
@@ -1837,24 +2142,48 @@ def process_species(
 # Main
 # ---------------------------------------------------------------------
 
+def print_plan_only(csv_files: list[Path], args: argparse.Namespace) -> None:
+    """Print occurrence QA and output targets without creating files."""
+    print("Plan-only mode: no directories or files will be created.")
+    for csv_path in csv_files:
+        print("\n" + "=" * 80)
+        print(f"Planning species file: {csv_path}")
+        print("=" * 80)
+
+        occurrences = load_occurrence_csv(
+            csv_path,
+            species_name_col=args.species_name_col,
+            lat_col=args.lat_col,
+            lon_col=args.lon_col,
+            source_col=args.source_col,
+            coordinate_uncertainty_col=args.coordinate_uncertainty_col,
+            max_coordinate_uncertainty_m=args.max_coordinate_uncertainty_m,
+        )
+        exact_deduped = occurrences.drop_duplicates(subset=["lat", "lon"])
+        source_counts = exact_deduped["source"].value_counts(dropna=False).to_dict()
+        uncertainty = exact_deduped["coordinate_uncertainty_m"]
+
+        print(f"Rows after schema/coordinate cleaning: {len(occurrences):,}")
+        print(f"Rows after exact lat/lon deduplication: {len(exact_deduped):,}")
+        print(f"Source counts after exact deduplication: {source_counts}")
+        if uncertainty.notna().any():
+            print(
+                "Coordinate uncertainty summary, m: "
+                f"min={uncertainty.min():.2f}, "
+                f"median={uncertainty.median():.2f}, "
+                f"max={uncertainty.max():.2f}"
+            )
+        else:
+            print("Coordinate uncertainty summary, m: not available")
+
+        paths = planned_output_paths(csv_path, args.output_root, args.chip_size)
+        print("Planned output paths:")
+        for label, path in paths.items():
+            print(f"  {label}: {path}")
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
-
-    tileindex_gdf, downloaded_tiles_gdf, naip_file_index = load_tileindex(args.tileindex, args.naip_folder)
-    downloaded_union = downloaded_tiles_gdf.geometry.union_all()
-
-    print("Computing WorldClim normalization statistics once from downloaded NAIP footprint...")
-    wc_stats = compute_worldclim_stats(args.worldclim_folder, downloaded_union)
-
-    topo_norm_stats = None
-    if args.topo_mode != "none":
-        topo_norm_stats = load_topo_normalization_stats(args.topo_normalization_stats)
-        if args.disable_topo_normalization:
-            print("Topographic normalization disabled: topo chips/scalars will be raw physical values.")
-        else:
-            source = args.topo_normalization_stats or "embedded DEFAULT_TOPO_NORM_STATS_3DEP_30M"
-            print(f"Topographic normalization enabled using: {source}")
 
     if args.occurrence_file:
         csv_files = [Path(args.occurrence_file)]
@@ -1865,6 +2194,23 @@ def main() -> None:
         raise RuntimeError("No occurrence CSV files found.")
 
     print(f"Found {len(csv_files)} occurrence CSV file(s).")
+
+    if args.plan_only:
+        print_plan_only(csv_files, args)
+        print("\nDone. Plan-only mode did not write files.")
+        return
+
+    tileindex_gdf, downloaded_tiles_gdf, naip_file_index = load_tileindex(args.tileindex, args.naip_folder)
+    wc_stats = load_or_compute_worldclim_stats(args, downloaded_tiles_gdf)
+
+    topo_norm_stats = None
+    if args.topo_mode != "none":
+        topo_norm_stats = load_topo_normalization_stats(args.topo_normalization_stats)
+        if args.disable_topo_normalization:
+            print("Topographic normalization disabled: topo chips/scalars will be raw physical values.")
+        else:
+            source = args.topo_normalization_stats or "embedded DEFAULT_TOPO_NORM_STATS_3DEP_30M"
+            print(f"Topographic normalization enabled using: {source}")
 
     failures = []
     for csv_path in csv_files:
