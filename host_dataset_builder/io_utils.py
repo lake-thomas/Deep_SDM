@@ -1,15 +1,21 @@
 from .common import *
 from .utils import slugify_species_name, display_name_from_slug, infer_species_slug_from_filename
 
-def planned_output_paths(csv_path: Path, output_root: str, chip_size: int) -> dict[str, Path]:
+def planned_output_paths(
+    csv_path: Path,
+    output_root: str,
+    chip_size: int,
+    dataset_tag: str = "may2026",
+    background_label: str = "PA",
+) -> dict[str, Path]:
     """Return the versioned output paths for a species without creating them."""
     species_slug = infer_species_slug_from_filename(csv_path)
     species_label = display_name_from_slug(species_slug)
     project_root = Path(output_root)
     datasets_root = project_root / f"{species_label}_Datasets"
     occurrences_root = project_root / f"{species_label}_US_Occurrences"
-    uniform_name = f"{species_label}_US_Uniform_PA_NAIP_{chip_size}_topo_norm_may2026"
-    blockcv_name = f"{species_label}_US_BlockCV_PA_NAIP_{chip_size}_topo_norm_may2026"
+    uniform_name = f"{species_label}_US_Uniform_{background_label}_NAIP_{chip_size}_topo_norm_{dataset_tag}"
+    blockcv_name = f"{species_label}_US_BlockCV_{background_label}_NAIP_{chip_size}_topo_norm_{dataset_tag}"
 
     return {
         "datasets_root": datasets_root,
