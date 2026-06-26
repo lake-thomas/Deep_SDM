@@ -4,6 +4,16 @@ from .env import extract_worldclim_vars_for_point, extract_ghm_for_point, is_val
 from .naip import extract_naip_chip_for_point
 from .topo import extract_topo_for_naip_chip
 
+def relative_posix_path(path: Path, root: Path) -> str:
+    """Return a portable relative path for dataset CSV path columns.
+
+    Dataset CSVs may be read on Linux workstations or Windows-mounted storage.
+    Normalizing generated relative paths to POSIX separators avoids creating
+    CSV rows that work only on the operating system used for dataset creation.
+    Existing input metadata path columns are preserved as source provenance.
+    """
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
 def build_dataset_csv(
     points_df: pd.DataFrame,
     topo_sources: dict | None,
@@ -78,7 +88,7 @@ def build_dataset_csv(
             topo_chip_fp = None
             if topo_mode in {"chip", "both"}:
                 topo_chip_fp = topo_chip_dir / chip_fn.replace("chip_", "topo_chip_")
-                topo_chip_rel = os.path.relpath(topo_chip_fp, dataset_root)
+                topo_chip_rel = relative_posix_path(topo_chip_fp, dataset_root)
 
             topo_stats = extract_topo_for_naip_chip(
                 naip_chip_fp=str(chip_fp),
@@ -96,7 +106,7 @@ def build_dataset_csv(
         # Columns with paths are relative to the dataset root for better portability
         rec = {
             "sample_id": sample_id,
-            "chip_path": os.path.relpath(chip_fp, dataset_root),
+            "chip_path": relative_posix_path(chip_fp, dataset_root),
             "topo_chip_path": topo_chip_rel,
             "split": split,
             "presence": presence,
@@ -152,4 +162,3 @@ def write_json(obj: dict, out_fp: Path) -> None:
     out_fp.parent.mkdir(parents=True, exist_ok=True)
     with open(out_fp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2)
-

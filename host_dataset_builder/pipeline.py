@@ -10,6 +10,7 @@ from .background import (
     deduplicate_presences_to_worldclim_cells,
     sample_background_points,
     sample_background_points_radial,
+    sample_background_points_us_naip,
     spatially_thin_points,
 )
 from .splits import stratified_train_val_test_split, assign_spatial_blocks, make_spatial_cv_rounds
@@ -34,18 +35,28 @@ def process_species(
     print("=" * 80)
 
     # Output roots
-    paths = planned_output_paths(csv_path, args.output_root, args.chip_size)
+    paths = planned_output_paths(
+        csv_path,
+        args.output_root,
+        args.chip_size,
+        dataset_tag=args.dataset_tag,
+        background_label=args.background_label,
+    )
     datasets_root = paths["datasets_root"]
     occurrences_root = paths["occurrences_root"]
     uniform_root = paths["uniform_root"]
     blockcv_root = paths["blockcv_root"]
+    build_blockcv = args.build_variant == "all"
     pb_points_csv = paths["presence_background_points"]
     background_audit_csv = paths["background_audit"]
 
     conflicts = []
     if pb_points_csv.exists():
         conflicts.append(pb_points_csv)
-    for output_dir in [uniform_root, blockcv_root]:
+    output_dirs = [uniform_root]
+    if build_blockcv:
+        output_dirs.append(blockcv_root)
+    for output_dir in output_dirs:
         if output_dir.exists() and any(output_dir.iterdir()):
             conflicts.append(output_dir)
     if conflicts and not args.allow_existing_output:
@@ -59,7 +70,8 @@ def process_species(
     datasets_root.mkdir(parents=True, exist_ok=True)
     occurrences_root.mkdir(parents=True, exist_ok=True)
     uniform_root.mkdir(parents=True, exist_ok=True)
-    blockcv_root.mkdir(parents=True, exist_ok=True)
+    if build_blockcv:
+        blockcv_root.mkdir(parents=True, exist_ok=True)
 
     if args.topo_mode != "none":
         topo_metadata = {
@@ -72,7 +84,8 @@ def process_species(
             "topo_normalization_stats": topo_norm_stats,
         }
         write_json(topo_metadata, uniform_root / "topography_metadata.json")
-        write_json(topo_metadata, blockcv_root / "topography_metadata.json")
+        if build_blockcv:
+            write_json(topo_metadata, blockcv_root / "topography_metadata.json")
 
     # WorldClim reference raster
     wc_reference = os.path.join(args.worldclim_folder, "wc2.1_30s_bio_1.tif")
@@ -108,28 +121,48 @@ def process_species(
             f"{len(presences):,} of {before_cap:,} presences retained"
         )
 
-    backgrounds = sample_background_points(
-        presence_gdf=presences,
-        downloaded_tiles_gdf=downloaded_tiles_gdf,
-        wc_reference_raster_fp=wc_reference,
-        background_multiplier=args.background_multiplier,
-        buffer_km=args.background_buffer_km,
-        inner_buffer_km=args.background_inner_buffer_km,
-        max_sampling_rounds=args.background_max_sampling_rounds,
-        max_naip_footprint_union_tiles=args.max_naip_footprint_union_tiles,
-        seed=args.seed,
-    ) if args.background_sampling_mode == "polygon" else sample_background_points_radial(
-        presence_gdf=presences,
-        wc_reference_raster_fp=wc_reference,
-        background_multiplier=args.background_multiplier,
-        buffer_km=args.background_buffer_km,
-        inner_buffer_km=args.background_inner_buffer_km,
-        max_sampling_rounds=args.background_max_sampling_rounds,
-        seed=args.seed,
-    )
+    if args.background_sampling_mode == "polygon":
+        backgrounds = sample_background_points(
+            presence_gdf=presences,
+            downloaded_tiles_gdf=downloaded_tiles_gdf,
+            wc_reference_raster_fp=wc_reference,
+            background_multiplier=args.background_multiplier,
+            buffer_km=args.background_buffer_km,
+            inner_buffer_km=args.background_inner_buffer_km,
+            max_sampling_rounds=args.background_max_sampling_rounds,
+            max_naip_footprint_union_tiles=args.max_naip_footprint_union_tiles,
+            seed=args.seed,
+        )
+    elif args.background_sampling_mode == "us_naip":
+        backgrounds = sample_background_points_us_naip(
+            presence_gdf=presences,
+            downloaded_tiles_gdf=downloaded_tiles_gdf,
+            wc_reference_raster_fp=wc_reference,
+            background_multiplier=args.background_multiplier,
+            inner_buffer_km=args.background_inner_buffer_km,
+            max_sampling_rounds=args.background_max_sampling_rounds,
+            seed=args.seed,
+            target_count=args.background_target_count,
+        )
+    else:
+        backgrounds = sample_background_points_radial(
+            presence_gdf=presences,
+            wc_reference_raster_fp=wc_reference,
+            background_multiplier=args.background_multiplier,
+            buffer_km=args.background_buffer_km,
+            inner_buffer_km=args.background_inner_buffer_km,
+            max_sampling_rounds=args.background_max_sampling_rounds,
+            seed=args.seed,
+        )
     print(f"Sampled {len(backgrounds):,} background points")
     sampling_audit = backgrounds.attrs.get("background_audit", pd.DataFrame())
-    if sampling_audit is not None and not sampling_audit.empty:
+    if args.background_sampling_mode == "us_naip":
+        target_label = args.background_target_count if args.background_target_count is not None else len(presences)
+        print(
+            "Background sampling retained broad unpaired USBg backgrounds: "
+            f"{len(backgrounds):,} of target {target_label:,}"
+        )
+    elif sampling_audit is not None and not sampling_audit.empty:
         print(
             "Background sampling retained local backgrounds for "
             f"{len(presences) - len(sampling_audit):,} of {len(presences):,} presences; "
@@ -155,10 +188,13 @@ def process_species(
 
     print(f"Combined presence/background dataset after spatial thinning: {len(pa_points):,}")
 
-    post_thin_audit = audit_presences_without_background(
-        pa_points,
-        reason="no_retained_paired_background_after_spatial_thinning",
-    )
+    if args.background_sampling_mode == "us_naip":
+        post_thin_audit = pd.DataFrame()
+    else:
+        post_thin_audit = audit_presences_without_background(
+            pa_points,
+            reason="no_retained_paired_background_after_spatial_thinning",
+        )
     audit_parts = []
     if sampling_audit is not None and not sampling_audit.empty:
         audit_parts.append(sampling_audit)
@@ -205,28 +241,30 @@ def process_species(
     uniform_points_gdf.drop(columns=["geometry"]).to_csv(uniform_points_csv, index=False)
     print(f"Saved: {uniform_points_csv}")
 
-    # Spatial block CV points.
-    pa_points_blocks = assign_spatial_blocks(
-        gpd.GeoDataFrame(pa_points.copy(), geometry="geometry", crs="EPSG:4326"),
-        block_size_m=args.block_size_m,
-        n_folds=args.n_folds,
-        seed=args.seed,
-    )
+    cv_rounds = None
+    if build_blockcv:
+        # Spatial block CV points.
+        pa_points_blocks = assign_spatial_blocks(
+            gpd.GeoDataFrame(pa_points.copy(), geometry="geometry", crs="EPSG:4326"),
+            block_size_m=args.block_size_m,
+            n_folds=args.n_folds,
+            seed=args.seed,
+        )
 
-    block_points_csv = blockcv_root / f"{species_label}_Pres_Bg_US_SpatialCV_Train_Val_Test_Points.csv"
-    cv_rounds = make_spatial_cv_rounds(
-        points_df=pa_points_blocks.drop(columns=["geometry"]),
-        n_folds=args.n_folds,
-        seed=args.seed,
-    )
-    cv_rounds.to_csv(block_points_csv, index=False)
-    print(f"Saved: {block_points_csv}")
+        block_points_csv = blockcv_root / f"{species_label}_Pres_Bg_US_SpatialCV_Train_Val_Test_Points.csv"
+        cv_rounds = make_spatial_cv_rounds(
+            points_df=pa_points_blocks.drop(columns=["geometry"]),
+            n_folds=args.n_folds,
+            seed=args.seed,
+        )
+        cv_rounds.to_csv(block_points_csv, index=False)
+        print(f"Saved: {block_points_csv}")
 
-    for round_num in range(1, args.n_folds + 1):
-        fold_df = cv_rounds[cv_rounds["cv_round"] == round_num].copy()
-        fold_csv = blockcv_root / f"{species_label}_Pres_Bg_US_SpatialCV_Blocks_Fold_{round_num}.csv"
-        fold_df.to_csv(fold_csv, index=False)
-        print(f"Saved: {fold_csv}")
+        for round_num in range(1, args.n_folds + 1):
+            fold_df = cv_rounds[cv_rounds["cv_round"] == round_num].copy()
+            fold_csv = blockcv_root / f"{species_label}_Pres_Bg_US_SpatialCV_Blocks_Fold_{round_num}.csv"
+            fold_df.to_csv(fold_csv, index=False)
+            print(f"Saved: {fold_csv}")
 
     # Open shared rasters once for final dataset extraction.
     wc_datasets = open_worldclim_datasets(args.worldclim_folder)
@@ -262,50 +300,51 @@ def process_species(
         print(f"Saved: {uniform_dataset_csv}")
         print(f"Uniform final rows retained after chip/env/topo filtering: {len(uniform_final):,}")
 
-        # Block CV final datasets.
-        for round_num in range(1, args.n_folds + 1):
-            round_df = cv_rounds[cv_rounds["cv_round"] == round_num].copy()
-            cv_dir = blockcv_root / f"CV_{round_num}"
-            cv_dir.mkdir(parents=True, exist_ok=True)
+        if build_blockcv:
+            # Block CV final datasets.
+            for round_num in range(1, args.n_folds + 1):
+                round_df = cv_rounds[cv_rounds["cv_round"] == round_num].copy()
+                cv_dir = blockcv_root / f"CV_{round_num}"
+                cv_dir.mkdir(parents=True, exist_ok=True)
 
-            if args.topo_mode != "none":
-                write_json(
-                    {
-                        "topo_mode": args.topo_mode,
-                        "topo_chip_size": args.topo_chip_size,
-                        "topo_min_valid_frac": args.topo_min_valid_frac,
-                        "topo_normalized": not args.disable_topo_normalization,
-                        "topo_band_order": TOPO_IMAGE_BANDS,
-                        "topo_scalar_columns": TOPO_SCALAR_COLUMNS,
-                        "topo_normalization_stats": topo_norm_stats,
-                    },
-                    cv_dir / "topography_metadata.json",
+                if args.topo_mode != "none":
+                    write_json(
+                        {
+                            "topo_mode": args.topo_mode,
+                            "topo_chip_size": args.topo_chip_size,
+                            "topo_min_valid_frac": args.topo_min_valid_frac,
+                            "topo_normalized": not args.disable_topo_normalization,
+                            "topo_band_order": TOPO_IMAGE_BANDS,
+                            "topo_scalar_columns": TOPO_SCALAR_COLUMNS,
+                            "topo_normalization_stats": topo_norm_stats,
+                        },
+                        cv_dir / "topography_metadata.json",
+                    )
+
+                cv_final = build_dataset_csv(
+                    points_df=round_df,
+                    topo_sources=topo_sources,
+                    topo_mode=args.topo_mode,
+                    topo_chip_size=args.topo_chip_size,
+                    topo_min_valid_frac=args.topo_min_valid_frac,
+                    topo_norm_stats=topo_norm_stats,
+                    normalize_topo=normalize_topo,
+                    dataset_root=cv_dir,
+                    tileindex_gdf=tileindex_gdf,
+                    naip_file_index=naip_file_index,
+                    wc_datasets=wc_datasets,
+                    wc_stats=wc_stats,
+                    ghm_ds=ghm_ds,
+                    chip_size=args.chip_size,
+                    species_label=species_label,
+                    suffix=f"_CV{round_num}",
+                    cv_round=round_num,
                 )
 
-            cv_final = build_dataset_csv(
-                points_df=round_df,
-                topo_sources=topo_sources,
-                topo_mode=args.topo_mode,
-                topo_chip_size=args.topo_chip_size,
-                topo_min_valid_frac=args.topo_min_valid_frac,
-                topo_norm_stats=topo_norm_stats,
-                normalize_topo=normalize_topo,
-                dataset_root=cv_dir,
-                tileindex_gdf=tileindex_gdf,
-                naip_file_index=naip_file_index,
-                wc_datasets=wc_datasets,
-                wc_stats=wc_stats,
-                ghm_ds=ghm_ds,
-                chip_size=args.chip_size,
-                species_label=species_label,
-                suffix=f"_CV{round_num}",
-                cv_round=round_num,
-            )
-
-            cv_dataset_csv = cv_dir / f"{species_label}_Train_Val_Test_US_BlockCV_{round_num}.csv"
-            cv_final.to_csv(cv_dataset_csv, index=False)
-            print(f"Saved: {cv_dataset_csv}")
-            print(f"CV {round_num} final rows retained after chip/env/topo filtering: {len(cv_final):,}")
+                cv_dataset_csv = cv_dir / f"{species_label}_Train_Val_Test_US_BlockCV_{round_num}.csv"
+                cv_final.to_csv(cv_dataset_csv, index=False)
+                print(f"Saved: {cv_dataset_csv}")
+                print(f"CV {round_num} final rows retained after chip/env/topo filtering: {len(cv_final):,}")
 
     finally:
         close_dataset_dict(wc_datasets)
@@ -346,7 +385,13 @@ def print_plan_only(csv_files: list[Path], args: argparse.Namespace) -> None:
         else:
             print("Coordinate uncertainty summary, m: not available")
 
-        paths = planned_output_paths(csv_path, args.output_root, args.chip_size)
+        paths = planned_output_paths(
+            csv_path,
+            args.output_root,
+            args.chip_size,
+            dataset_tag=args.dataset_tag,
+            background_label=args.background_label,
+        )
         print("Planned output paths:")
         for label, path in paths.items():
             print(f"  {label}: {path}")
@@ -384,6 +429,21 @@ def main() -> None:
 
     failures = []
     for csv_path in csv_files:
+        if args.build_variant == "uniform" and args.skip_completed_uniform:
+            species_slug = infer_species_slug_from_filename(csv_path)
+            species_label = display_name_from_slug(species_slug)
+            paths = planned_output_paths(
+                csv_path,
+                args.output_root,
+                args.chip_size,
+                dataset_tag=args.dataset_tag,
+                background_label=args.background_label,
+            )
+            uniform_dataset_csv = paths["uniform_root"] / f"{species_label}_Pres_Bg_US_Uniform_Train_Val_Test_Dataset.csv"
+            if uniform_dataset_csv.exists():
+                print(f"\nSkipping {csv_path.name}: completed uniform dataset exists at {uniform_dataset_csv}")
+                continue
+
         try:
             process_species(
                 csv_path=csv_path,

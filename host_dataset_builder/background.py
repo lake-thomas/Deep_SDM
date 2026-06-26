@@ -160,7 +160,9 @@ def sample_background_points_radial(
     """
     presence_gdf = assign_presence_ids(presence_gdf)
     n_background = len(presence_gdf)
-    if n_background == 0:
+    if n_background <= 0:
+        raise ValueError("Background target count must be positive.")
+    if len(presence_gdf) == 0:
         raise ValueError("No presence points available after thinning.")
 
     # Buffer around presences in meters, used for both candidate generation and distance-based filtering.
@@ -311,7 +313,9 @@ def sample_background_points(
     """
     presence_gdf = assign_presence_ids(presence_gdf)
     n_background = len(presence_gdf)
-    if n_background == 0:
+    if n_background <= 0:
+        raise ValueError("Background target count must be positive.")
+    if len(presence_gdf) == 0:
         raise ValueError("No presence points available after thinning.")
 
     if inner_buffer_km < 0:
@@ -456,6 +460,186 @@ def sample_background_points(
 
     print(
         "Final background nearest-presence distance summary, km: "
+        f"min={background_sampled['nearest_presence_km'].min():.2f}, "
+        f"median={background_sampled['nearest_presence_km'].median():.2f}, "
+        f"max={background_sampled['nearest_presence_km'].max():.2f}"
+    )
+
+    return background_sampled
+
+def _sample_points_from_weighted_polygons(
+    polygons: list,
+    probabilities: np.ndarray,
+    n: int,
+    rng: np.random.Generator,
+    max_attempts: int,
+) -> list[Point]:
+    """Sample random points from a list of projected polygons using area weights."""
+    points: list[Point] = []
+    if not polygons:
+        return points
+
+    attempts = 0
+    while len(points) < n and attempts < max_attempts:
+        remaining = n - len(points)
+        draw_n = max(remaining * 3, 1000)
+        poly_indices = rng.choice(len(polygons), size=draw_n, replace=True, p=probabilities)
+        for idx in poly_indices:
+            geom = polygons[int(idx)]
+            minx, miny, maxx, maxy = geom.bounds
+            pt = Point(rng.uniform(minx, maxx), rng.uniform(miny, maxy))
+            if geom.contains(pt):
+                points.append(pt)
+                if len(points) >= n:
+                    break
+        attempts += draw_n
+    return points
+
+
+def sample_background_points_us_naip(
+    presence_gdf: gpd.GeoDataFrame,
+    downloaded_tiles_gdf: gpd.GeoDataFrame,
+    wc_reference_raster_fp: str,
+    background_multiplier: float,
+    seed: int,
+    inner_buffer_km: float = 5.0,
+    max_sampling_rounds: int = 25,
+    target_count: int | None = None,
+) -> gpd.GeoDataFrame:
+    """
+    Sample broad US background points from downloaded NAIP tile footprints.
+
+    This mode is intended for USBg-style datasets: MaxEnt-style broad
+    background samples are drawn from the local NAIP archive across the US
+    rather than from a narrow presence doughnut. Points are excluded from
+    presence WorldClim cells and, when requested, from a small radius around
+    presences.
+    """
+    presence_gdf = assign_presence_ids(presence_gdf)
+    n_background = int(target_count) if target_count is not None else len(presence_gdf)
+    if n_background <= 0:
+        raise ValueError("Background target count must be positive.")
+    if len(presence_gdf) == 0:
+        raise ValueError("No presence points available after thinning.")
+    if downloaded_tiles_gdf.empty:
+        raise ValueError("No downloaded NAIP tile footprints are available for USBg sampling.")
+    if inner_buffer_km < 0:
+        raise ValueError("--background-inner-buffer-km must be >= 0.")
+
+    with rasterio.open(wc_reference_raster_fp) as src:
+        affine = src.transform
+        raster_crs = src.crs
+
+    pres_for_cells = presence_gdf.to_crs(raster_crs).copy()
+    rows_pr, cols_pr = rasterio.transform.rowcol(
+        affine,
+        pres_for_cells.geometry.x.values,
+        pres_for_cells.geometry.y.values,
+    )
+    presence_cells = {f"{r}_{c}" for r, c in zip(rows_pr, cols_pr)}
+
+    presence_proj = presence_gdf.to_crs("EPSG:5070").copy()
+    presence_xy = np.column_stack([presence_proj.geometry.x.values, presence_proj.geometry.y.values])
+    presence_tree = cKDTree(presence_xy)
+    inner_m = inner_buffer_km * 1000.0
+
+    tiles_proj = downloaded_tiles_gdf.to_crs("EPSG:5070").copy()
+    tiles_proj = tiles_proj[~tiles_proj.geometry.is_empty & tiles_proj.geometry.notna()].copy()
+    tiles_proj["_area_m2"] = tiles_proj.geometry.area
+    tiles_proj = tiles_proj[tiles_proj["_area_m2"] > 0].copy()
+    if tiles_proj.empty:
+        raise RuntimeError("Downloaded NAIP tile footprints have no positive-area geometries.")
+
+    areas = tiles_proj["_area_m2"].to_numpy(dtype=float)
+    probabilities = areas / areas.sum()
+    polygons = [geom.buffer(0) for geom in tiles_proj.geometry.tolist()]
+    polygons = [geom for geom in polygons if not geom.is_empty]
+    if len(polygons) != len(probabilities):
+        areas = np.array([geom.area for geom in polygons], dtype=float)
+        probabilities = areas / areas.sum()
+
+    valid_candidate_chunks = []
+    n_candidates_per_round = max(n_background, int(math.ceil(n_background * background_multiplier)))
+    pooled = None
+
+    print(
+        "Background sampling rule: broad US downloaded NAIP footprint "
+        f"with >= {inner_buffer_km:g} km presence exclusion; "
+        f"target={n_background:,} backgrounds"
+    )
+    print(f"Downloaded NAIP tile footprints available for USBg sampling: {len(polygons):,}")
+
+    for round_i in range(max_sampling_rounds):
+        rng = np.random.default_rng(seed + round_i)
+        candidate_points_proj = _sample_points_from_weighted_polygons(
+            polygons=polygons,
+            probabilities=probabilities,
+            n=n_candidates_per_round,
+            rng=rng,
+            max_attempts=n_candidates_per_round * 50,
+        )
+        if not candidate_points_proj:
+            continue
+
+        candidates_proj = gpd.GeoDataFrame(geometry=candidate_points_proj, crs="EPSG:5070")
+        nearest_m, _ = presence_tree.query(
+            np.column_stack([candidates_proj.geometry.x.values, candidates_proj.geometry.y.values]),
+            k=1,
+        )
+        candidates_proj["nearest_presence_km"] = nearest_m / 1000.0
+        if inner_m > 0:
+            candidates_proj = candidates_proj[nearest_m >= inner_m].copy()
+        if candidates_proj.empty:
+            continue
+
+        candidates = candidates_proj.to_crs(raster_crs)
+        rows_bg, cols_bg = rasterio.transform.rowcol(
+            affine,
+            candidates.geometry.x.values,
+            candidates.geometry.y.values,
+        )
+        candidates["cell_id"] = [f"{r}_{c}" for r, c in zip(rows_bg, cols_bg)]
+        candidates = candidates[~candidates["cell_id"].isin(presence_cells)].copy()
+
+        if not candidates.empty:
+            valid_candidate_chunks.append(candidates)
+
+        if valid_candidate_chunks:
+            pooled = pd.concat(valid_candidate_chunks, ignore_index=True)
+            pooled = gpd.GeoDataFrame(pooled, geometry="geometry", crs=raster_crs)
+            pooled = (
+                pooled.groupby("cell_id", group_keys=False)
+                .apply(lambda x: x.sample(n=1, random_state=seed))
+                .reset_index(drop=True)
+            )
+
+            print(
+                f"USBg sampling round {round_i + 1}: "
+                f"{len(pooled):,} unique valid broad background cells"
+            )
+            if len(pooled) >= n_background:
+                break
+    else:
+        available = len(pooled) if pooled is not None else 0
+        raise RuntimeError(
+            f"Only {available} valid unique broad background cells available after "
+            f"{max_sampling_rounds} rounds, but {n_background} are needed. "
+            "Try increasing --background-multiplier or --background-max-sampling-rounds."
+        )
+
+    if pooled is None or len(pooled) < n_background:
+        raise RuntimeError("Insufficient USBg background points after candidate sampling.")
+
+    background_sampled = pooled.sample(n=n_background, random_state=seed).copy()
+    background_sampled = background_sampled.to_crs("EPSG:4326")
+    background_sampled["lat"] = background_sampled.geometry.y
+    background_sampled["lon"] = background_sampled.geometry.x
+    background_sampled["source"] = "background"
+    background_sampled["background_sampling_rule"] = f"us_naip_footprint_min_{inner_buffer_km:g}_km"
+    background_sampled.attrs["background_audit"] = pd.DataFrame()
+
+    print(
+        "Final USBg background nearest-presence distance summary, km: "
         f"min={background_sampled['nearest_presence_km'].min():.2f}, "
         f"median={background_sampled['nearest_presence_km'].median():.2f}, "
         f"max={background_sampled['nearest_presence_km'].max():.2f}"
