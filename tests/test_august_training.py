@@ -36,6 +36,7 @@ from august2026_wait_for_control_screen import control_gates_ready
 from august2026_loss_screen_evidence import strict_evidence_gate
 from august2026_augmentation_screen import augmentation_combinations, build_config as build_augmentation_config
 from august2026_blockcv import FOLDS, blockcv_name
+from august2026_blockcv_evidence import calibration_recommendation, summarize_values
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -947,6 +948,28 @@ class AugustExperimentDesignTests(unittest.TestCase):
         names = [blockcv_name(selection, fold) for fold in FOLDS]
         self.assertEqual(len(set(names)), 5)
         self.assertTrue(names[0].endswith("blockcv1_20260813"))
+
+    def test_blockcv_summary_requires_five_finite_values(self):
+        summary = summarize_values(pd.Series([0.7, 0.8, 0.9, 0.85, 0.75]), "auc")
+        self.assertAlmostEqual(summary["auc_median"], 0.8)
+        with self.assertRaises(ValueError):
+            summarize_values(pd.Series([0.7, 0.8]), "auc")
+
+    def test_blockcv_calibration_rule_is_paired_and_conservative(self):
+        group = pd.DataFrame(
+            {
+                "test_brier_score": [0.20, 0.21, 0.19, 0.22, 0.18],
+                "test_platt_calibration_brier_score": [0.18, 0.20, 0.18, 0.23, 0.17],
+                "test_calibration_binary_log_loss": [0.60, 0.61, 0.58, 0.63, 0.55],
+                "test_platt_calibration_binary_log_loss": [0.56, 0.58, 0.55, 0.64, 0.52],
+            }
+        )
+        recommendation = calibration_recommendation(group)
+        self.assertEqual(recommendation["calibration_recommendation"], "platt")
+        self.assertEqual(recommendation["folds_platt_nonworse_both"], 4)
+        group.loc[1:4, "test_platt_calibration_binary_log_loss"] += 0.2
+        recommendation = calibration_recommendation(group)
+        self.assertEqual(recommendation["calibration_recommendation"], "raw")
 
 
 if __name__ == "__main__":
