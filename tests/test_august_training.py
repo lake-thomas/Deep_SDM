@@ -480,10 +480,54 @@ class AugustExperimentDesignTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (artifact_root / "COMPLETED").write_text("complete\n", encoding="utf-8")
+            exact_root = root / "exact_overlap"
+            for index, experiment in enumerate(experiments):
+                candidate = exact_root / experiment
+                candidate.mkdir(parents=True)
+                (candidate / "summary.json").write_text(
+                    json.dumps(
+                        {
+                            "status": "complete",
+                            "host": "vitis_labrusca",
+                            "pair_count": 25,
+                            "baseline_pa_minus_ny_probability_mean": -0.5,
+                            "candidate_pa_minus_ny_probability_mean": -0.3,
+                            "baseline_absolute_probability_shift_mean": 0.5,
+                            "candidate_absolute_probability_shift_mean": 0.3,
+                            "paired_absolute_probability_shift_reduction_mean": 0.2,
+                            "paired_absolute_probability_shift_reduction_bootstrap_95ci": [
+                                0.1,
+                                0.3,
+                            ],
+                            "absolute_shift_reduction_supported": True,
+                            "checkpoint_sha256": f"checkpoint-{index}",
+                            "dataset_sha256": f"dataset-{index}",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (candidate / "COMPLETED").write_text(
+                    "complete\n", encoding="utf-8"
+                )
+            (exact_root / "batch_status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "candidate_count": 2,
+                        "completed_experiments": experiments,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (exact_root / "COMPLETED").write_text("complete\n", encoding="utf-8")
             status = synthesize(
-                training_path, [artifact_root], root / "synthesis"
+                training_path,
+                [artifact_root],
+                root / "synthesis",
+                exact_overlap_roots=[exact_root],
             )
             self.assertEqual(status["experiment_count"], 2)
+            self.assertEqual(len(status["exact_overlap_roots"]), 1)
             self.assertTrue(
                 (root / "synthesis" / "combined_candidate_evidence.csv").is_file()
             )

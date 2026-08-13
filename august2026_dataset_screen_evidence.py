@@ -159,6 +159,69 @@ def load_artifact_rows(artifact_roots: list[Path]) -> pd.DataFrame:
     return frame
 
 
+def load_exact_overlap_rows(exact_roots: list[Path]) -> pd.DataFrame:
+    rows = []
+    for root in exact_roots:
+        status_path = root / "batch_status.json"
+        if not status_path.is_file() or not (root / "COMPLETED").is_file():
+            raise FileNotFoundError(f"Incomplete exact-overlap batch root: {root}")
+        status = read_json(status_path)
+        if status.get("status") != "complete":
+            raise RuntimeError(f"Exact-overlap batch is not complete: {status_path}")
+        experiments = status.get("completed_experiments") or []
+        if len(experiments) != status.get("candidate_count"):
+            raise RuntimeError(f"Exact-overlap candidate count disagrees: {status_path}")
+        for experiment in experiments:
+            candidate_root = root / experiment
+            summary_path = candidate_root / "summary.json"
+            if not summary_path.is_file() or not (candidate_root / "COMPLETED").is_file():
+                raise FileNotFoundError(
+                    f"Incomplete exact-overlap candidate output: {candidate_root}"
+                )
+            summary = read_json(summary_path)
+            if summary.get("status") != "complete":
+                raise RuntimeError(
+                    f"Exact-overlap candidate status failed: {candidate_root}"
+                )
+            ci = summary[
+                "paired_absolute_probability_shift_reduction_bootstrap_95ci"
+            ]
+            rows.append(
+                {
+                    "experiment": experiment,
+                    "exact_overlap_host": summary["host"],
+                    "exact_overlap_pair_count": summary["pair_count"],
+                    "exact_overlap_baseline_signed_shift_mean": summary[
+                        "baseline_pa_minus_ny_probability_mean"
+                    ],
+                    "exact_overlap_candidate_signed_shift_mean": summary[
+                        "candidate_pa_minus_ny_probability_mean"
+                    ],
+                    "exact_overlap_baseline_absolute_shift_mean": summary[
+                        "baseline_absolute_probability_shift_mean"
+                    ],
+                    "exact_overlap_candidate_absolute_shift_mean": summary[
+                        "candidate_absolute_probability_shift_mean"
+                    ],
+                    "exact_overlap_paired_absolute_shift_reduction_mean": summary[
+                        "paired_absolute_probability_shift_reduction_mean"
+                    ],
+                    "exact_overlap_paired_absolute_shift_reduction_ci_low": ci[0],
+                    "exact_overlap_paired_absolute_shift_reduction_ci_high": ci[1],
+                    "exact_overlap_absolute_shift_reduction_supported": summary[
+                        "absolute_shift_reduction_supported"
+                    ],
+                    "exact_overlap_checkpoint_sha256": summary["checkpoint_sha256"],
+                    "exact_overlap_dataset_sha256": summary["dataset_sha256"],
+                    "exact_overlap_summary": str(summary_path.resolve()),
+                }
+            )
+    frame = pd.DataFrame(rows)
+    if frame.empty or frame["experiment"].duplicated().any():
+        raise ValueError("Exact-overlap evidence must contain unique candidate experiments")
+    return frame
+
+
 def add_pareto_flags(frame: pd.DataFrame) -> pd.DataFrame:
     output = frame.copy()
     output["pareto_nondominated_within_host"] = False
@@ -224,6 +287,7 @@ def synthesize(
     training_metrics_path: Path,
     artifact_roots: list[Path],
     output_dir: Path,
+    exact_overlap_roots: list[Path] | None = None,
 ) -> dict:
     training = pd.read_csv(training_metrics_path, low_memory=False)
     if training.empty or training["experiment"].duplicated().any():
@@ -266,6 +330,40 @@ def synthesize(
         raise ValueError("Training and artifact dataset hashes disagree")
     if not (combined["host"] == combined["artifact_host"]).all():
         raise ValueError("Training and artifact host identities disagree")
+    exact_overlap_roots = exact_overlap_roots or []
+    if exact_overlap_roots:
+        exact = load_exact_overlap_rows(exact_overlap_roots)
+        expected_exact = set(
+            combined.loc[
+                combined["host"] != "notholithocarpus_densiflorus", "experiment"
+            ]
+        )
+        found_exact = set(exact["experiment"])
+        if expected_exact != found_exact:
+            raise ValueError(
+                "Exact-overlap experiment set differs for eastern candidates: "
+                f"missing={sorted(expected_exact - found_exact)}, "
+                f"unexpected={sorted(found_exact - expected_exact)}"
+            )
+        combined = combined.merge(
+            exact, on="experiment", how="left", validate="one_to_one"
+        )
+        eastern = combined["host"] != "notholithocarpus_densiflorus"
+        if not (
+            combined.loc[eastern, "host"]
+            == combined.loc[eastern, "exact_overlap_host"]
+        ).all():
+            raise ValueError("Training and exact-overlap host identities disagree")
+        if not (
+            combined.loc[eastern, "best_checkpoint_sha256"]
+            == combined.loc[eastern, "exact_overlap_checkpoint_sha256"]
+        ).all():
+            raise ValueError("Training and exact-overlap checkpoint hashes disagree")
+        if not (
+            combined.loc[eastern, "training_dataset_csv_sha256"]
+            == combined.loc[eastern, "exact_overlap_dataset_sha256"]
+        ).all():
+            raise ValueError("Training and exact-overlap dataset hashes disagree")
     combined = add_pareto_flags(combined)
 
     output_dir.mkdir(parents=True, exist_ok=False)
@@ -280,6 +378,9 @@ def synthesize(
         "training_metrics": str(training_metrics_path.resolve()),
         "training_metrics_sha256": sha256(training_metrics_path),
         "artifact_roots": [str(path.resolve()) for path in artifact_roots],
+        "exact_overlap_roots": [
+            str(path.resolve()) for path in exact_overlap_roots
+        ],
         "experiment_count": len(combined),
         "hosts": sorted(combined["host"].unique()),
         "pareto_candidate_count_by_host": {
@@ -311,19 +412,29 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--training-metrics", type=Path, required=True)
     parser.add_argument("--artifact-root", type=Path, action="append", required=True)
+    parser.add_argument("--exact-overlap-root", type=Path, action="append", default=None)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    required = [args.training_metrics, *args.artifact_root]
+    required = [
+        args.training_metrics,
+        *args.artifact_root,
+        *(args.exact_overlap_root or []),
+    ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         raise FileNotFoundError(f"Missing dataset-screen evidence inputs: {missing}")
     if args.output_dir.exists():
         raise FileExistsError(f"Refusing to reuse evidence output: {args.output_dir}")
-    status = synthesize(args.training_metrics, args.artifact_root, args.output_dir)
+    status = synthesize(
+        args.training_metrics,
+        args.artifact_root,
+        args.output_dir,
+        exact_overlap_roots=args.exact_overlap_root,
+    )
     print(json.dumps(status, indent=2))
 
 

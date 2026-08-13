@@ -136,6 +136,24 @@ def freeze_selection(
                 ],
                 "test_roc_auc_all_thresholds": row["test_roc_auc_all_thresholds"],
                 "test_brier_score": row["test_brier_score"],
+                **(
+                    {
+                        "exact_overlap_summary": row["exact_overlap_summary"],
+                        "exact_overlap_candidate_absolute_shift_mean": row[
+                            "exact_overlap_candidate_absolute_shift_mean"
+                        ],
+                        "exact_overlap_paired_absolute_shift_reduction_mean": row[
+                            "exact_overlap_paired_absolute_shift_reduction_mean"
+                        ],
+                        "exact_overlap_absolute_shift_reduction_supported": strict_bool(
+                            row["exact_overlap_absolute_shift_reduction_supported"],
+                            "exact_overlap_absolute_shift_reduction_supported",
+                        ),
+                    }
+                    if "exact_overlap_summary" in row.index
+                    and pd.notna(row["exact_overlap_summary"])
+                    else {}
+                ),
                 "rationale": rationales[host],
             }
         )
