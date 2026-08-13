@@ -579,6 +579,11 @@ def run(args: argparse.Namespace) -> dict:
         "naip_min_valid_frac": args.naip_min_valid_frac,
         "topo_min_valid_frac": args.topo_min_valid_frac,
         "seed": args.seed,
+        "train_frac": args.train_frac,
+        "val_frac": args.val_frac,
+        "test_frac": args.test_frac,
+        "block_size_m": args.block_size_m,
+        "n_folds": args.n_folds,
         "builder_git": _git_state(Path(__file__).resolve().parents[1]),
         "builder_source_sha256": _builder_source_hashes(Path(__file__).resolve().parent),
     }
