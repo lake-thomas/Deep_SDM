@@ -3,7 +3,12 @@
 from .common import *
 from .cli import parse_args
 from .utils import set_seed, infer_species_slug_from_filename, display_name_from_slug
-from .io_utils import planned_output_paths, load_tileindex, load_occurrence_csv
+from .io_utils import (
+    add_canonical_naip_source_metadata,
+    planned_output_paths,
+    load_tileindex,
+    load_occurrence_csv,
+)
 from .background import (
     audit_presences_without_background,
     build_presence_background_points,
@@ -17,6 +22,36 @@ from .splits import stratified_train_val_test_split, assign_spatial_blocks, make
 from .env import load_or_compute_worldclim_stats, open_worldclim_datasets
 from .topo import load_topo_normalization_stats, open_topo_sources, close_dataset_dict
 from .dataset_builders import build_dataset_csv, write_json
+from .qa import audit_dataset_manifest, manifest_has_hard_failures, write_manifest_qa_package
+
+
+def run_manifest_qa(
+    manifest: pd.DataFrame,
+    dataset_root: Path,
+    args: argparse.Namespace,
+    label: str,
+) -> None:
+    """Write and optionally enforce the configured pre-fit QA package."""
+    if args.manifest_qa_mode == "off":
+        return
+    qa_tables = audit_dataset_manifest(
+        manifest,
+        dataset_root=dataset_root,
+        require_actual_provenance=args.naip_source_lock_mode == "strict",
+        enforce_source_tile_isolation=True,
+        enforce_spatial_block_isolation=True,
+    )
+    status_path = write_manifest_qa_package(qa_tables, dataset_root / "qa")
+    hard_failure = manifest_has_hard_failures(qa_tables)
+    print(f"Saved {label} manifest QA package: {status_path}")
+    print(f"{label} production-ready QA status: {not hard_failure}")
+    if args.manifest_qa_mode == "strict" and hard_failure:
+        failed_checks = qa_tables["findings"].loc[
+            (qa_tables["findings"]["severity"] == "hard")
+            & (qa_tables["findings"]["status"] == "fail"),
+            "check",
+        ].tolist()
+        raise RuntimeError(f"Strict manifest QA failed for {label}: {failed_checks}")
 
 def process_species(
     csv_path: Path,
@@ -143,6 +178,10 @@ def process_species(
             max_sampling_rounds=args.background_max_sampling_rounds,
             seed=args.seed,
             target_count=args.background_target_count,
+            allowed_states=args.background_allowed_states,
+            sampling_design=args.background_sampling_design,
+            domain_columns=args.background_domain_columns,
+            domain_min_count=args.background_domain_min_count,
         )
     else:
         backgrounds = sample_background_points_radial(
@@ -229,6 +268,7 @@ def process_species(
         val_frac=args.val_frac,
         test_frac=args.test_frac,
         seed=args.seed,
+        group_column=args.uniform_split_group_column,
     )
 
     uniform_points_gdf = gpd.GeoDataFrame(
@@ -249,6 +289,7 @@ def process_species(
             block_size_m=args.block_size_m,
             n_folds=args.n_folds,
             seed=args.seed,
+            group_column=args.block_group_column,
         )
 
         block_points_csv = blockcv_root / f"{species_label}_Pres_Bg_US_SpatialCV_Train_Val_Test_Points.csv"
@@ -256,6 +297,7 @@ def process_species(
             points_df=pa_points_blocks.drop(columns=["geometry"]),
             n_folds=args.n_folds,
             seed=args.seed,
+            validation_mode=args.blockcv_validation_mode,
         )
         cv_rounds.to_csv(block_points_csv, index=False)
         print(f"Saved: {block_points_csv}")
@@ -293,12 +335,15 @@ def process_species(
             species_label=species_label,
             suffix="_uniform",
             cv_round=None,
+            naip_source_lock_mode=args.naip_source_lock_mode,
+            naip_min_valid_frac=args.naip_min_valid_frac,
         )
 
         uniform_dataset_csv = uniform_root / f"{species_label}_Pres_Bg_US_Uniform_Train_Val_Test_Dataset.csv"
         uniform_final.to_csv(uniform_dataset_csv, index=False)
         print(f"Saved: {uniform_dataset_csv}")
         print(f"Uniform final rows retained after chip/env/topo filtering: {len(uniform_final):,}")
+        run_manifest_qa(uniform_final, uniform_root, args, f"{species_label} uniform")
 
         if build_blockcv:
             # Block CV final datasets.
@@ -339,12 +384,20 @@ def process_species(
                     species_label=species_label,
                     suffix=f"_CV{round_num}",
                     cv_round=round_num,
+                    naip_source_lock_mode=args.naip_source_lock_mode,
+                    naip_min_valid_frac=args.naip_min_valid_frac,
                 )
 
                 cv_dataset_csv = cv_dir / f"{species_label}_Train_Val_Test_US_BlockCV_{round_num}.csv"
                 cv_final.to_csv(cv_dataset_csv, index=False)
                 print(f"Saved: {cv_dataset_csv}")
                 print(f"CV {round_num} final rows retained after chip/env/topo filtering: {len(cv_final):,}")
+                run_manifest_qa(
+                    cv_final,
+                    cv_dir,
+                    args,
+                    f"{species_label} BlockCV {round_num}",
+                )
 
     finally:
         close_dataset_dict(wc_datasets)
@@ -396,6 +449,34 @@ def print_plan_only(csv_files: list[Path], args: argparse.Namespace) -> None:
         for label, path in paths.items():
             print(f"  {label}: {path}")
 
+
+def print_background_domain_plan(args: argparse.Namespace) -> None:
+    """Print a read-only acquisition-domain feasibility summary."""
+    print("Background-domain plan-only mode: no directories or files will be created.")
+    tiles = gpd.read_file(args.tileindex).to_crs("EPSG:4326")
+    tiles = add_canonical_naip_source_metadata(tiles)
+    if args.background_allowed_states:
+        tiles = tiles[tiles["source_archive_state"].isin(args.background_allowed_states)].copy()
+    if tiles.empty:
+        raise RuntimeError("No tile-index rows remain after the requested state filter.")
+
+    missing = [column for column in args.background_domain_columns if column not in tiles.columns]
+    if missing:
+        raise ValueError(f"Requested background-domain columns are missing: {missing}")
+    incomplete = tiles[args.background_domain_columns].isna().any(axis=1)
+    print(f"Tile-index rows in accessible background frame: {len(tiles):,}")
+    print(f"Rows with incomplete requested domain metadata: {int(incomplete.sum()):,}")
+    complete = tiles.loc[~incomplete].copy()
+    summary = (
+        complete.groupby(args.background_domain_columns, dropna=False)
+        .size()
+        .rename("tile_count")
+        .reset_index()
+        .sort_values(["tile_count", *args.background_domain_columns], ascending=[False, *([True] * len(args.background_domain_columns))])
+    )
+    print(f"Complete acquisition domains: {len(summary):,}")
+    print(summary.to_string(index=False))
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
@@ -409,6 +490,11 @@ def main() -> None:
         raise RuntimeError("No occurrence CSV files found.")
 
     print(f"Found {len(csv_files)} occurrence CSV file(s).")
+
+    if args.background_domain_plan_only:
+        print_background_domain_plan(args)
+        print("\nDone. Background-domain plan-only mode did not write files.")
+        return
 
     if args.plan_only:
         print_plan_only(csv_files, args)
@@ -462,5 +548,10 @@ def main() -> None:
         print("\nCompleted with failures:")
         for filename, error in failures:
             print(f"  - {filename}: {error}")
+        if args.manifest_qa_mode == "strict":
+            raise RuntimeError(
+                f"Strict August build failed for {len(failures)} species; "
+                "review the per-species errors and QA packages."
+            )
     else:
         print("\nDone.")

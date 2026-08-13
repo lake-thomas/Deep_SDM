@@ -227,8 +227,6 @@ def extract_topo_for_naip_chip(
     stats = summarize_topo_stack(model_stack, valid)
     stats["topo_valid_frac"] = valid_frac
     stats["topo_normalized"] = bool(normalize_topo)
-    print("Topo Normalization Stats:", stats)
-
     if out_fp is not None:
         out_stack = np.where(np.isfinite(model_stack), model_stack, out_nodata).astype(np.float32)
 
@@ -257,10 +255,11 @@ def extract_topo_for_naip_chip(
 
         Path(out_fp).parent.mkdir(parents=True, exist_ok=True)
 
-        with rasterio.open(out_fp, "w", **profile) as dst:
+        partial_fp = f"{out_fp}.partial"
+        with rasterio.open(partial_fp, "w", **profile) as dst:
             dst.write(out_stack)
             for band_idx, name in enumerate(TOPO_IMAGE_BANDS, start=1):
                 dst.set_band_description(band_idx, name)
+        os.replace(partial_fp, out_fp)
 
     return stats
-

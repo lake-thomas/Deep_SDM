@@ -32,6 +32,8 @@ def build_dataset_csv(
     species_label: str,
     suffix: str = "",
     cv_round: int | None = None,
+    naip_source_lock_mode: str = "legacy",
+    naip_min_valid_frac: float = 1.0,
 ) -> pd.DataFrame:
     """
     Extract NAIP chips, optional topo chips/scalars, environmental vars, and
@@ -62,15 +64,18 @@ def build_dataset_csv(
 
         chip_fp = chip_dir / chip_fn
 
-        ok = extract_naip_chip_for_point(
+        naip_provenance = extract_naip_chip_for_point(
             lon=lon,
             lat=lat,
             out_fp=str(chip_fp),
             chip_size=chip_size,
             tileindex_gdf=tileindex_gdf,
             naip_file_index=naip_file_index,
+            source_record=row,
+            source_lock_mode=naip_source_lock_mode,
+            min_valid_frac=naip_min_valid_frac,
         )
-        if not ok:
+        if not naip_provenance:
             continue
 
         env = extract_worldclim_vars_for_point(lon, lat, wc_datasets, wc_stats)
@@ -127,9 +132,22 @@ def build_dataset_csv(
             "block_id",
             "fold",
             "spatial_thin_distance_m",
+            "background_sampling_domain",
+            "source_selection_method",
+            "source_tile_key",
+            "source_filename",
+            "source_local_path",
+            "source_archive_state",
+            "source_archive_year",
+            "source_acq_date",
+            "source_acq_year",
+            "source_acq_month",
+            "source_domain_id",
         ]:
             if optional_col in row.index:
                 rec[optional_col] = row.get(optional_col)
+
+        rec.update(naip_provenance)
 
         if cv_round is not None:
             rec["cv_round"] = cv_round

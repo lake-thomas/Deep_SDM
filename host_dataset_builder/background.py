@@ -1,6 +1,7 @@
 from .common import *
 from .utils import geometry_union
 from .naip import attach_naip_filename_or_url
+from .io_utils import SOURCE_METADATA_COLUMNS, add_canonical_naip_source_metadata
 
 def deduplicate_presences_to_worldclim_cells(
     occurrences_gdf: gpd.GeoDataFrame,
@@ -28,11 +29,10 @@ def deduplicate_presences_to_worldclim_cells(
     )
     occ["cell_id"] = [f"{r}_{c}" for r, c in zip(rows, cols)]
 
-    dedup = (
-        occ.groupby("cell_id", group_keys=False)
-        .apply(lambda x: x.sample(n=1, random_state=seed))
-        .reset_index(drop=True)
-    )
+    dedup = occ.groupby("cell_id", group_keys=False).sample(
+        n=1,
+        random_state=seed,
+    ).reset_index(drop=True)
 
     return dedup.to_crs("EPSG:4326")
 
@@ -496,6 +496,178 @@ def _sample_points_from_weighted_polygons(
     return points
 
 
+def _allocate_domain_counts(
+    domain_weights: pd.Series,
+    total: int,
+    minimum_per_domain: int,
+) -> pd.Series:
+    """Allocate an exact total with a minimum per domain and weighted residual."""
+    weights = pd.to_numeric(domain_weights, errors="coerce").fillna(0.0).clip(lower=0.0)
+    if total < 0:
+        raise ValueError("Allocation total must be non-negative.")
+    if minimum_per_domain < 0:
+        raise ValueError("minimum_per_domain must be non-negative.")
+    if weights.empty or total == 0:
+        return pd.Series(0, index=weights.index, dtype=int)
+
+    n_domains = len(weights)
+    base = min(minimum_per_domain, total // n_domains)
+    allocation = pd.Series(base, index=weights.index, dtype=int)
+    remaining = total - int(allocation.sum())
+    if remaining == 0:
+        return allocation
+
+    if float(weights.sum()) <= 0:
+        weights = pd.Series(1.0, index=weights.index)
+    fractional = remaining * weights / float(weights.sum())
+    floors = np.floor(fractional).astype(int)
+    allocation += floors
+    remainder = total - int(allocation.sum())
+    if remainder:
+        order = (fractional - floors).sort_values(ascending=False, kind="mergesort").index
+        for domain in order[:remainder]:
+            allocation.loc[domain] += 1
+    return allocation.astype(int)
+
+
+def _sample_points_from_weighted_tiles(
+    tiles_proj: gpd.GeoDataFrame,
+    n: int,
+    rng: np.random.Generator,
+    max_attempts: int,
+) -> gpd.GeoDataFrame:
+    """Sample points from tile footprints while preserving the selected source row."""
+    if n <= 0:
+        return gpd.GeoDataFrame(columns=[*SOURCE_METADATA_COLUMNS, "geometry"], geometry="geometry", crs=tiles_proj.crs)
+    if tiles_proj.empty:
+        raise RuntimeError("Cannot sample from an empty NAIP tile set.")
+
+    areas = tiles_proj["_area_m2"].to_numpy(dtype=float)
+    probabilities = areas / areas.sum()
+    tile_rows = list(tiles_proj.iterrows())
+    records: list[dict] = []
+    attempts = 0
+
+    while len(records) < n and attempts < max_attempts:
+        remaining = n - len(records)
+        draw_n = max(remaining * 3, 1000)
+        tile_indices = rng.choice(len(tile_rows), size=draw_n, replace=True, p=probabilities)
+        for tile_position in tile_indices:
+            _, tile = tile_rows[int(tile_position)]
+            geom = tile.geometry
+            minx, miny, maxx, maxy = geom.bounds
+            point = Point(rng.uniform(minx, maxx), rng.uniform(miny, maxy))
+            attempts += 1
+            if not geom.contains(point):
+                if attempts >= max_attempts:
+                    break
+                continue
+            record = {column: tile.get(column) for column in SOURCE_METADATA_COLUMNS}
+            record["source_selection_method"] = "sampled_tile_footprint"
+            record["geometry"] = point
+            records.append(record)
+            if len(records) >= n or attempts >= max_attempts:
+                break
+
+    if len(records) < n:
+        raise RuntimeError(
+            f"Only sampled {len(records):,} source-locked points after {attempts:,} attempts; "
+            f"requested {n:,}."
+        )
+    return gpd.GeoDataFrame(records, geometry="geometry", crs=tiles_proj.crs)
+
+
+def _sample_source_locked_candidates(
+    tiles_proj: gpd.GeoDataFrame,
+    n: int,
+    rng: np.random.Generator,
+    sampling_design: str,
+    domain_columns: list[str],
+    minimum_per_domain: int,
+) -> gpd.GeoDataFrame:
+    """Draw area-weighted or domain-balanced source-locked candidates."""
+    if sampling_design == "area_weighted":
+        return _sample_points_from_weighted_tiles(
+            tiles_proj,
+            n=n,
+            rng=rng,
+            max_attempts=n * 100,
+        )
+    if sampling_design != "domain_balanced":
+        raise ValueError(f"Unsupported USBg sampling design: {sampling_design}")
+
+    missing = [column for column in domain_columns if column not in tiles_proj.columns]
+    if missing:
+        raise ValueError(f"Domain columns are missing from the NAIP tile index: {missing}")
+    if tiles_proj[domain_columns].isna().any(axis=None):
+        raise ValueError(
+            "Domain-balanced sampling requires non-missing values in all domain columns. "
+            "Filter or repair incomplete tile metadata first."
+        )
+
+    domain_key = tiles_proj[domain_columns].astype(str).agg("|".join, axis=1)
+    tiles_with_domains = tiles_proj.copy()
+    tiles_with_domains["_sampling_domain"] = domain_key
+    domain_areas = tiles_with_domains.groupby("_sampling_domain")["_area_m2"].sum().sort_index()
+    allocation = _allocate_domain_counts(domain_areas, n, minimum_per_domain)
+
+    chunks = []
+    for domain, domain_n in allocation.items():
+        if domain_n <= 0:
+            continue
+        domain_tiles = tiles_with_domains[tiles_with_domains["_sampling_domain"] == domain]
+        chunk = _sample_points_from_weighted_tiles(
+            domain_tiles,
+            n=int(domain_n),
+            rng=rng,
+            max_attempts=int(domain_n) * 100,
+        )
+        chunk["background_sampling_domain"] = domain
+        chunks.append(chunk)
+
+    if not chunks:
+        raise RuntimeError("Domain-balanced USBg sampling produced no candidates.")
+    return gpd.GeoDataFrame(pd.concat(chunks, ignore_index=True), geometry="geometry", crs=tiles_proj.crs)
+
+
+def _select_domain_balanced_pool(
+    pooled: gpd.GeoDataFrame,
+    n: int,
+    minimum_per_domain: int,
+    seed: int,
+) -> gpd.GeoDataFrame:
+    """Select an exact domain-balanced final sample, redistributing shortages."""
+    counts = pooled["background_sampling_domain"].value_counts().sort_index()
+    desired = _allocate_domain_counts(counts.astype(float), n, minimum_per_domain)
+    selected_chunks = []
+    remaining_pool_chunks = []
+    selected_n = 0
+
+    for domain, available_n in counts.items():
+        group = pooled[pooled["background_sampling_domain"] == domain]
+        take_n = min(int(desired.loc[domain]), int(available_n))
+        if take_n:
+            selected = group.sample(n=take_n, random_state=seed)
+            selected_chunks.append(selected)
+            selected_n += take_n
+            remaining_pool_chunks.append(group.drop(index=selected.index))
+        else:
+            remaining_pool_chunks.append(group)
+
+    deficit = n - selected_n
+    if deficit:
+        remaining_pool = pd.concat(remaining_pool_chunks, ignore_index=False)
+        if len(remaining_pool) < deficit:
+            raise RuntimeError(
+                f"Domain-balanced final selection needs {deficit:,} additional candidates, "
+                f"but only {len(remaining_pool):,} remain."
+            )
+        selected_chunks.append(remaining_pool.sample(n=deficit, random_state=seed + 1))
+
+    selected = pd.concat(selected_chunks, ignore_index=True)
+    return gpd.GeoDataFrame(selected, geometry="geometry", crs=pooled.crs)
+
+
 def sample_background_points_us_naip(
     presence_gdf: gpd.GeoDataFrame,
     downloaded_tiles_gdf: gpd.GeoDataFrame,
@@ -505,9 +677,13 @@ def sample_background_points_us_naip(
     inner_buffer_km: float = 5.0,
     max_sampling_rounds: int = 25,
     target_count: int | None = None,
+    allowed_states: list[str] | None = None,
+    sampling_design: str = "area_weighted",
+    domain_columns: list[str] | None = None,
+    domain_min_count: int = 5,
 ) -> gpd.GeoDataFrame:
     """
-    Sample broad US background points from downloaded NAIP tile footprints.
+    Sample source-locked backgrounds from downloaded NAIP tile footprints.
 
     This mode is intended for USBg-style datasets: MaxEnt-style broad
     background samples are drawn from the local NAIP archive across the US
@@ -530,6 +706,12 @@ def sample_background_points_us_naip(
         affine = src.transform
         raster_crs = src.crs
 
+    domain_columns = domain_columns or [
+        "source_archive_state",
+        "source_acq_year",
+        "source_acq_month",
+    ]
+
     pres_for_cells = presence_gdf.to_crs(raster_crs).copy()
     rows_pr, cols_pr = rasterio.transform.rowcol(
         affine,
@@ -543,45 +725,61 @@ def sample_background_points_us_naip(
     presence_tree = cKDTree(presence_xy)
     inner_m = inner_buffer_km * 1000.0
 
-    tiles_proj = downloaded_tiles_gdf.to_crs("EPSG:5070").copy()
+    tiles = add_canonical_naip_source_metadata(downloaded_tiles_gdf)
+    if allowed_states:
+        normalized_states = {str(state).strip().upper() for state in allowed_states}
+        tiles = tiles[tiles["source_archive_state"].isin(normalized_states)].copy()
+        if tiles.empty:
+            raise RuntimeError(
+                "No downloaded NAIP tile footprints remain after applying "
+                f"--background-allowed-states={sorted(normalized_states)}."
+            )
+
+    required_source_fields = [
+        "source_tile_key",
+        "source_filename",
+        "source_local_path",
+        "source_archive_state",
+        "source_acq_date",
+    ]
+    incomplete = tiles[required_source_fields].isna().any(axis=1)
+    if incomplete.any():
+        raise RuntimeError(
+            f"{int(incomplete.sum()):,} downloaded tile rows lack exact source metadata. "
+            "Source-locked USBg sampling refuses incomplete tile records."
+        )
+
+    tiles_proj = tiles.to_crs("EPSG:5070").copy()
     tiles_proj = tiles_proj[~tiles_proj.geometry.is_empty & tiles_proj.geometry.notna()].copy()
     tiles_proj["_area_m2"] = tiles_proj.geometry.area
     tiles_proj = tiles_proj[tiles_proj["_area_m2"] > 0].copy()
     if tiles_proj.empty:
         raise RuntimeError("Downloaded NAIP tile footprints have no positive-area geometries.")
 
-    areas = tiles_proj["_area_m2"].to_numpy(dtype=float)
-    probabilities = areas / areas.sum()
-    polygons = [geom.buffer(0) for geom in tiles_proj.geometry.tolist()]
-    polygons = [geom for geom in polygons if not geom.is_empty]
-    if len(polygons) != len(probabilities):
-        areas = np.array([geom.area for geom in polygons], dtype=float)
-        probabilities = areas / areas.sum()
-
     valid_candidate_chunks = []
     n_candidates_per_round = max(n_background, int(math.ceil(n_background * background_multiplier)))
     pooled = None
 
     print(
-        "Background sampling rule: broad US downloaded NAIP footprint "
+        "Background sampling rule: downloaded NAIP footprint "
         f"with >= {inner_buffer_km:g} km presence exclusion; "
-        f"target={n_background:,} backgrounds"
+        f"target={n_background:,} backgrounds; design={sampling_design}; "
+        f"states={sorted(set(tiles_proj['source_archive_state'])) if allowed_states else 'all'}"
     )
-    print(f"Downloaded NAIP tile footprints available for USBg sampling: {len(polygons):,}")
+    print(f"Downloaded NAIP tile footprints available for USBg sampling: {len(tiles_proj):,}")
 
     for round_i in range(max_sampling_rounds):
         rng = np.random.default_rng(seed + round_i)
-        candidate_points_proj = _sample_points_from_weighted_polygons(
-            polygons=polygons,
-            probabilities=probabilities,
+        candidates_proj = _sample_source_locked_candidates(
+            tiles_proj=tiles_proj,
             n=n_candidates_per_round,
             rng=rng,
-            max_attempts=n_candidates_per_round * 50,
+            sampling_design=sampling_design,
+            domain_columns=domain_columns,
+            minimum_per_domain=domain_min_count,
         )
-        if not candidate_points_proj:
+        if candidates_proj.empty:
             continue
-
-        candidates_proj = gpd.GeoDataFrame(geometry=candidate_points_proj, crs="EPSG:5070")
         nearest_m, _ = presence_tree.query(
             np.column_stack([candidates_proj.geometry.x.values, candidates_proj.geometry.y.values]),
             k=1,
@@ -608,8 +806,8 @@ def sample_background_points_us_naip(
             pooled = pd.concat(valid_candidate_chunks, ignore_index=True)
             pooled = gpd.GeoDataFrame(pooled, geometry="geometry", crs=raster_crs)
             pooled = (
-                pooled.groupby("cell_id", group_keys=False)
-                .apply(lambda x: x.sample(n=1, random_state=seed))
+                pooled.sample(frac=1.0, random_state=seed)
+                .drop_duplicates("cell_id", keep="first")
                 .reset_index(drop=True)
             )
 
@@ -630,12 +828,23 @@ def sample_background_points_us_naip(
     if pooled is None or len(pooled) < n_background:
         raise RuntimeError("Insufficient USBg background points after candidate sampling.")
 
-    background_sampled = pooled.sample(n=n_background, random_state=seed).copy()
+    if sampling_design == "domain_balanced":
+        background_sampled = _select_domain_balanced_pool(
+            pooled,
+            n=n_background,
+            minimum_per_domain=domain_min_count,
+            seed=seed,
+        )
+    else:
+        background_sampled = pooled.sample(n=n_background, random_state=seed).copy()
     background_sampled = background_sampled.to_crs("EPSG:4326")
     background_sampled["lat"] = background_sampled.geometry.y
     background_sampled["lon"] = background_sampled.geometry.x
     background_sampled["source"] = "background"
-    background_sampled["background_sampling_rule"] = f"us_naip_footprint_min_{inner_buffer_km:g}_km"
+    state_label = "all_states" if not allowed_states else "states_" + "_".join(sorted(normalized_states))
+    background_sampled["background_sampling_rule"] = (
+        f"us_naip_{sampling_design}_{state_label}_min_{inner_buffer_km:g}_km"
+    )
     background_sampled.attrs["background_audit"] = pd.DataFrame()
 
     print(
@@ -675,6 +884,9 @@ def build_presence_background_points(
         "cell_id",
         "nearest_presence_km",
         "background_sampling_rule",
+        "background_sampling_domain",
+        "source_selection_method",
+        *SOURCE_METADATA_COLUMNS,
     ]:
         if extra in pres.columns or extra in bg.columns:
             keep_cols.append(extra)
@@ -781,10 +993,24 @@ def spatially_thin_points(
 
         keep_indices.append(int(idx))
 
-        # Drop all currently available points within the exclusion radius.
-        exclusion_geom = gdf_proj.geometry.iloc[idx].buffer(min_distance_m)
-        nearby = sindex.query(exclusion_geom, predicate="intersects")
-        available[nearby] = False
+        # Query an exact square, then apply an exact Euclidean radius. A
+        # polygonal ``Point.buffer`` is an inscribed circle approximation and
+        # can miss points just inside the requested distance at segment
+        # mid-angles (observed at 799.60 m for an 800 m gate).
+        point = gdf_proj.geometry.iloc[idx]
+        search = box(
+            point.x - min_distance_m,
+            point.y - min_distance_m,
+            point.x + min_distance_m,
+            point.y + min_distance_m,
+        )
+        nearby = np.asarray(sindex.query(search, predicate="intersects"), dtype=int)
+        if len(nearby):
+            candidate_x = gdf_proj.geometry.x.iloc[nearby].to_numpy(dtype=float)
+            candidate_y = gdf_proj.geometry.y.iloc[nearby].to_numpy(dtype=float)
+            distance_sq = (candidate_x - point.x) ** 2 + (candidate_y - point.y) ** 2
+            within = nearby[distance_sq < float(min_distance_m) ** 2]
+            available[within] = False
 
     keep_indices = sorted(keep_indices)
 

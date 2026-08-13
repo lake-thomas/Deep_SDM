@@ -1,6 +1,88 @@
 from .common import *
 from .utils import slugify_species_name, display_name_from_slug, infer_species_slug_from_filename
 
+
+SOURCE_METADATA_COLUMNS = [
+    "source_tile_key",
+    "source_filename",
+    "source_local_path",
+    "source_archive_state",
+    "source_archive_year",
+    "source_acq_date",
+    "source_acq_year",
+    "source_acq_month",
+    "source_domain_id",
+]
+
+
+def _normalize_naip_date(value, filename: str | None = None) -> str | None:
+    """Return an eight-digit acquisition date from metadata or filename."""
+    if pd.notna(value):
+        digits = re.sub(r"\D", "", str(value))
+        if len(digits) >= 8:
+            return digits[:8]
+    if isinstance(filename, str):
+        match = re.search(r"_(\d{8})(?:\.tif)?$", os.path.basename(filename), flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+
+def add_canonical_naip_source_metadata(tileindex: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Add stable source/acquisition fields used by August sampling and QA.
+
+    The local archive tile index already carries exact local paths and parsed
+    acquisition metadata. This helper normalizes those fields while preserving
+    all original columns for provenance and backward compatibility.
+    """
+    out = tileindex.copy()
+
+    local_filename = out.get("local_filename", out.get("filename"))
+    if local_filename is None:
+        local_filename = pd.Series([None] * len(out), index=out.index, dtype=object)
+    local_filename = local_filename.fillna(out.get("filename", local_filename))
+
+    out["source_filename"] = local_filename.apply(
+        lambda value: os.path.basename(str(value)) if pd.notna(value) else None
+    )
+    derived_tile_key = out["source_filename"].apply(naip_tile_key)
+    source_tile_key = out.get("tile_key", derived_tile_key)
+    out["source_tile_key"] = source_tile_key.where(source_tile_key.notna(), derived_tile_key)
+    out["source_local_path"] = out.get("local_path", pd.Series(index=out.index, dtype=object))
+    out["source_archive_state"] = (
+        out.get("archive_state", pd.Series(index=out.index, dtype=object))
+        .astype("string")
+        .str.strip()
+        .str.upper()
+        .replace({"": pd.NA, "NAN": pd.NA, "NONE": pd.NA})
+    )
+
+    raw_date = out.get("local_acq_date", pd.Series(index=out.index, dtype=object))
+    out["source_acq_date"] = [
+        _normalize_naip_date(value, filename)
+        for value, filename in zip(raw_date, out["source_filename"])
+    ]
+    out["source_acq_year"] = pd.to_numeric(
+        out["source_acq_date"].astype("string").str.slice(0, 4),
+        errors="coerce",
+    ).astype("Int64")
+    out["source_acq_month"] = pd.to_numeric(
+        out["source_acq_date"].astype("string").str.slice(4, 6),
+        errors="coerce",
+    ).astype("Int64")
+
+    archive_year = out.get("archive_folder_year", out.get("local_year"))
+    if archive_year is None:
+        archive_year = out["source_acq_year"]
+    out["source_archive_year"] = pd.to_numeric(archive_year, errors="coerce").astype("Int64")
+    out["source_archive_year"] = out["source_archive_year"].fillna(out["source_acq_year"])
+
+    state = out["source_archive_state"].fillna("UNKNOWN").astype(str)
+    year = out["source_acq_year"].astype("string").fillna("UNKNOWN")
+    date = out["source_acq_date"].fillna("UNKNOWN").astype(str)
+    out["source_domain_id"] = state + "|" + year + "|" + date
+    return out
+
 def planned_output_paths(
     csv_path: Path,
     output_root: str,
@@ -158,6 +240,7 @@ def load_tileindex(tileindex_fp: str, naip_folder: str):
     tileindex[["local_path", "local_match_method"]] = resolved
 
     tileindex["downloaded"] = tileindex["local_path"].notna()
+    tileindex = add_canonical_naip_source_metadata(tileindex)
     downloaded_tiles = tileindex[tileindex["downloaded"]].copy()
 
     print(f"Tile index rows: {len(tileindex):,}")

@@ -62,6 +62,16 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--background-sampling-mode", choices=["radial", "polygon", "us_naip"], default="radial", help="Radial samples local candidates around presences; polygon uses a union/difference doughnut polygon; us_naip samples broad US backgrounds from downloaded NAIP tile footprints.")
 
+    parser.add_argument("--background-allowed-states", nargs="+", default=None, help="Optional archive-state restriction for us_naip backgrounds, for example CA OR for Tanoak.")
+
+    parser.add_argument("--background-sampling-design", choices=["area_weighted", "domain_balanced"], default="area_weighted", help="Within us_naip, use the June area-weighted design or a minimum-depth acquisition-domain design with an area-weighted residual allocation.")
+
+    parser.add_argument("--background-domain-columns", nargs="+", default=["source_archive_state", "source_acq_year", "source_acq_month"], help="Canonical tile metadata columns defining domains for domain-balanced us_naip sampling.")
+
+    parser.add_argument("--background-domain-min-count", type=int, default=5, help="Minimum target per available domain before area-weighted residual allocation. This is a sampling target, not an exclusion rule.")
+
+    parser.add_argument("--background-domain-plan-only", action="store_true", help="Read the local tile index, print the filtered acquisition-domain feasibility table, and exit without indexing imagery or writing files.")
+
     parser.add_argument("--dataset-tag", type=str, default="may2026", help="Version tag used in output dataset directory names.")
 
     parser.add_argument("--background-label", type=str, default="PA", help="Short background label used in output dataset directory names, e.g. PA or USBg.")
@@ -87,13 +97,25 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--test-frac", type=float, default=0.15, help="Fraction of data for test split.")
 
+    parser.add_argument("--uniform-split-group-column", type=str, default=None, help="Optional grouping column, normally source_tile_key, whose rows must remain together in the uniform train/validation/test split.")
+
     parser.add_argument("--n-folds", type=int, default=5, help="Number of spatial CV folds.")
 
     parser.add_argument("--block-size-m", type=float, default=200000, help="Spatial block size in meters for block CV. Default = 200 km.")
 
+    parser.add_argument("--block-group-column", type=str, default=None, help="Optional grouping column, normally source_tile_key, whose rows must be assigned to one spatial block/fold even when point centers straddle a block edge.")
+
+    parser.add_argument("--blockcv-validation-mode", choices=["row_stratified", "heldout_fold"], default="row_stratified", help="row_stratified preserves the June train/validation behavior. heldout_fold uses one complete non-test spatial fold for validation in each CV round.")
+
     parser.add_argument("--spatial-thin-distance-m", type=float, default=800.0, help="Minimum allowed distance in meters between any presence or background samples after the combined PA dataset is built.")
 
     parser.add_argument("--topo-min-valid-frac", type=float, default=0.90, help="Minimum fraction of valid pixels required across all four topo layers.")
+
+    parser.add_argument("--naip-source-lock-mode", choices=["legacy", "strict"], default="legacy", help="Legacy preserves June multi-acquisition fallback behavior. Strict uses only the selected state/acquisition domain and records actual source paths.")
+
+    parser.add_argument("--naip-min-valid-frac", type=float, default=1.0, help="Minimum valid NAIP pixel fraction required in strict source-lock mode.")
+
+    parser.add_argument("--manifest-qa-mode", choices=["off", "report", "strict"], default="off", help="off preserves legacy behavior; report writes QA tables; strict writes QA tables and rejects any hard provenance, path, duplicate, or leakage finding.")
 
     # NORMALIZATION SETTINGS
     parser.add_argument("--worldclim-stats-json", type=str, default=None, help="Optional JSON cache for WorldClim normalization stats. If it exists, it is loaded; otherwise stats are computed and written there.")
@@ -126,6 +148,9 @@ def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     if args.n_folds < 2:
         parser.error("--n-folds must be >= 2.")
 
+    if args.blockcv_validation_mode == "heldout_fold" and args.n_folds < 3:
+        parser.error("--blockcv-validation-mode heldout_fold requires --n-folds >= 3.")
+
     if args.background_inner_buffer_km < 0:
         parser.error("--background-inner-buffer-km must be >= 0.")
 
@@ -141,8 +166,42 @@ def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     if args.background_target_count is not None and args.background_target_count <= 0:
         parser.error("--background-target-count must be > 0 when supplied.")
 
+    if args.background_domain_min_count < 0:
+        parser.error("--background-domain-min-count must be >= 0.")
+
+    if args.background_allowed_states:
+        args.background_allowed_states = [str(state).strip().upper() for state in args.background_allowed_states]
+        if args.background_sampling_mode != "us_naip":
+            parser.error("--background-allowed-states is supported only with --background-sampling-mode us_naip.")
+
+    if args.background_sampling_design != "area_weighted" and args.background_sampling_mode != "us_naip":
+        parser.error("--background-sampling-design domain_balanced requires --background-sampling-mode us_naip.")
+
+    if not args.background_domain_columns:
+        parser.error("--background-domain-columns must contain at least one canonical source column.")
+
     if args.spatial_thin_distance_m < 0:
         parser.error("--spatial-thin-distance-m must be >= 0. Use 0 to disable adjacent point thinning.")
+
+    if not (0.0 <= args.naip_min_valid_frac <= 1.0):
+        parser.error("--naip-min-valid-frac must be in [0, 1].")
+
+    if args.manifest_qa_mode == "strict":
+        if args.naip_source_lock_mode != "strict":
+            parser.error("--manifest-qa-mode strict requires --naip-source-lock-mode strict.")
+        if args.uniform_split_group_column != "source_tile_key":
+            parser.error(
+                "--manifest-qa-mode strict requires "
+                "--uniform-split-group-column source_tile_key."
+            )
+        if args.build_variant == "all":
+            if args.block_group_column != "source_tile_key":
+                parser.error(
+                    "Strict QA with BlockCV requires "
+                    "--block-group-column source_tile_key."
+                )
+            if args.blockcv_validation_mode != "heldout_fold":
+                parser.error("Strict QA with BlockCV requires --blockcv-validation-mode heldout_fold.")
 
     if args.max_presences_after_thinning is not None and args.max_presences_after_thinning <= 0:
         parser.error("--max-presences-after-thinning must be > 0 when supplied.")
