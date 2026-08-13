@@ -45,7 +45,13 @@ def prepare_dataset(path: Path) -> pd.DataFrame:
     source_column = next(
         (
             column
-            for column in ("actual_source_path", "source_local_path", "local_path", "filename")
+            for column in (
+                "actual_source_paths",
+                "actual_source_path",
+                "source_local_path",
+                "local_path",
+                "filename",
+            )
             if column in output.columns
         ),
         None,
@@ -53,10 +59,34 @@ def prepare_dataset(path: Path) -> pd.DataFrame:
     if source_column is None:
         raise ValueError(f"Dataset has no source-acquisition identity column: {path}")
     output["source_identity"] = output[source_column].fillna("").astype(str)
-    for column in ("source_tile_key", "source_domain_id", "source_archive_state"):
-        if column not in output.columns:
-            output[column] = ""
-        output[column] = output[column].fillna("").astype(str)
+    source_tile_column = (
+        "actual_source_tile_keys"
+        if "actual_source_tile_keys" in output.columns
+        else "source_tile_key"
+    )
+    output["source_tile_key"] = (
+        output[source_tile_column].fillna("").astype(str)
+        if source_tile_column in output.columns
+        else ""
+    )
+    actual_domain_columns = {
+        "actual_source_archive_state",
+        "actual_source_acq_date",
+    }
+    if actual_domain_columns.issubset(output.columns):
+        output["source_domain_id"] = (
+            output["actual_source_archive_state"].fillna("").astype(str)
+            + "|"
+            + output["actual_source_acq_date"].fillna("").astype(str)
+        )
+        output["source_archive_state"] = (
+            output["actual_source_archive_state"].fillna("").astype(str)
+        )
+    else:
+        for column in ("source_domain_id", "source_archive_state"):
+            if column not in output.columns:
+                output[column] = ""
+            output[column] = output[column].fillna("").astype(str)
     return output
 
 
