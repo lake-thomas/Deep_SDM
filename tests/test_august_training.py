@@ -18,6 +18,7 @@ from calibration_utils import (
     fit_platt_calibrator,
 )
 from august2026_experiments import filter_specs, stage_specs
+from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
 from model import HostModelBase
 from transforms import RandomDihedral4Band, RandomRadiometricAugment4Band
@@ -212,6 +213,31 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertEqual(len(specs), 1)
         self.assertEqual(specs[0].background_target, 10000)
         self.assertIn("stage01_vitis_labrusca_db_bg10000", specs[0].name)
+
+    def test_incomplete_registry_is_reported_without_selecting_a_model(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = root / "config.json"
+            config.write_text(json.dumps({"csv_path": str(root / "missing.csv")}))
+            registry = root / "experiment_registry.tsv"
+            pd.DataFrame(
+                [
+                    {
+                        "stage": "dataset-screen",
+                        "host": "vitis_labrusca",
+                        "arm": "random",
+                        "background_target": 6000,
+                        "split_design": "uniform",
+                        "experiment": "not_run",
+                        "config_path": str(config),
+                        "run_dir": str(root / "run"),
+                    }
+                ]
+            ).to_csv(registry, sep="\t", index=False)
+            status = summarize_registry(registry, allow_incomplete=True)
+            self.assertEqual(status["complete_gate_count"], 0)
+            self.assertEqual(status["incomplete_gate_count"], 1)
+            self.assertFalse(status["all_experiments_evidence_complete"])
 
 
 if __name__ == "__main__":
