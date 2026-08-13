@@ -260,39 +260,258 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             hosts = sorted(HOSTS)
-            registry = root / "registry.tsv"
-            pd.DataFrame(
-                [
+            experiments = {host: f"production_{host}" for host in hosts}
+            training_rows = []
+            registry_rows = []
+            for host in hosts:
+                dataset = root / "datasets" / host / "uniform.csv"
+                dataset.parent.mkdir(parents=True, exist_ok=True)
+                dataset.write_text("sample_id,presence\nexample,1\n", encoding="utf-8")
+                run_dir = root / "runs" / experiments[host]
+                checkpoint = run_dir / "checkpoints" / "best.pt"
+                checkpoint.parent.mkdir(parents=True, exist_ok=True)
+                checkpoint.write_bytes(f"checkpoint-{host}".encode())
+                config = root / "configs" / f"{experiments[host]}.json"
+                write_json(config, {"csv_path": str(dataset), "postfit_calibration": "none"})
+                for name in (
+                    "run_status.json", "runtime_provenance.json", "training_design.json",
+                    "validation_raw_calibration_metrics.json",
+                    "test_raw_calibration_metrics.json", "validation_threshold.json",
+                ):
+                    write_json(run_dir / name, {"status": "complete"})
+                for name in (
+                    "training_history.csv", "model_summary_metrics.csv",
+                    "validation_prediction_results.csv", "prediction_results.csv",
+                ):
+                    path = run_dir / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("value\n1\n", encoding="utf-8")
+                common = {
+                    "host": host,
+                    "experiment": experiments[host],
+                    "config_path": str(config),
+                    "config_sha256": sha256(config),
+                    "run_dir": str(run_dir),
+                }
+                registry_rows.append(
+                    {**common, "approved_score_space": "raw_sigmoid_probability"}
+                )
+                training_rows.append(
                     {
-                        "host": host,
-                        "experiment": f"production_{host}",
-                        "approved_score_space": "raw_sigmoid_probability",
+                        **common,
+                        "training_dataset_csv_sha256": sha256(dataset),
+                        "best_checkpoint_sha256": sha256(checkpoint),
+                        "postfit_calibration": "none",
+                        "stage": "production-fit",
+                        "evidence_gate_passed": True,
                     }
-                    for host in hosts
-                ]
-            ).to_csv(registry, sep="\t", index=False)
+                )
+            registry = root / "registry.tsv"
+            pd.DataFrame(registry_rows).to_csv(registry, sep="\t", index=False)
+            training_metrics = root / "accepted" / "training_metrics.csv"
+            training_metrics.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(training_rows).to_csv(training_metrics, index=False)
 
-            pointer_paths = {}
-            for key in (
-                "training_metrics", "production_selection_manifest",
-                "dataset_overlap_summary", "pathway_summary", "host_acceptance",
-            ):
-                path = root / "accepted" / f"{key}.json"
-                write_json(path, {"status": "complete"})
-                pointer_paths[key] = str(path)
+            dataset_evidence_table = root / "selection" / "dataset_evidence.csv"
+            dataset_evidence_table.parent.mkdir(parents=True, exist_ok=True)
+            dataset_evidence_table.write_text("host,score\nexample,1\n", encoding="utf-8")
+            dataset_evidence_summary = root / "selection" / "dataset_summary.json"
+            write_json(dataset_evidence_summary, {"status": "complete"})
+            dataset_selection = root / "selection" / "dataset_selection.json"
+            write_json(
+                dataset_selection,
+                {
+                    "status": "complete",
+                    "source_evidence_summary": str(dataset_evidence_summary),
+                    "source_evidence_summary_sha256": sha256(dataset_evidence_summary),
+                    "source_combined_evidence": str(dataset_evidence_table),
+                    "source_combined_evidence_sha256": sha256(dataset_evidence_table),
+                },
+            )
+            loss_table = root / "selection" / "loss_evidence.csv"
+            loss_table.write_text("host,score\nexample,1\n", encoding="utf-8")
+            loss_summary = root / "selection" / "loss_summary.json"
+            write_json(
+                loss_summary,
+                {
+                    "status": "complete",
+                    "selection_manifest": str(dataset_selection),
+                    "selection_manifest_sha256": sha256(dataset_selection),
+                    "source_dataset_evidence": str(dataset_evidence_table),
+                    "source_dataset_evidence_sha256": sha256(dataset_evidence_table),
+                },
+            )
+            loss_selection = root / "selection" / "loss_selection.json"
+            write_json(
+                loss_selection,
+                {
+                    "status": "complete",
+                    "source_evidence_summary": str(loss_summary),
+                    "source_evidence_summary_sha256": sha256(loss_summary),
+                    "source_combined_evidence": str(loss_table),
+                    "source_combined_evidence_sha256": sha256(loss_table),
+                },
+            )
+            augmentation_table = root / "selection" / "augmentation_evidence.csv"
+            augmentation_table.write_text("host,score\nexample,1\n", encoding="utf-8")
+            augmentation_summary = root / "selection" / "augmentation_summary.json"
+            write_json(
+                augmentation_summary,
+                {
+                    "status": "complete",
+                    "selection_manifest": str(loss_selection),
+                    "selection_manifest_sha256": sha256(loss_selection),
+                    "source_loss_evidence": str(loss_table),
+                    "source_loss_evidence_sha256": sha256(loss_table),
+                },
+            )
+            blockcv_selection = root / "selection" / "blockcv_selection.json"
+            write_json(
+                blockcv_selection,
+                {
+                    "status": "complete",
+                    "source_evidence_summary": str(augmentation_summary),
+                    "source_evidence_summary_sha256": sha256(augmentation_summary),
+                    "source_combined_evidence": str(augmentation_table),
+                    "source_combined_evidence_sha256": sha256(augmentation_table),
+                },
+            )
             blockcv_dir = root / "accepted" / "blockcv"
-            write_json(blockcv_dir / "summary.json", {"status": "complete"})
+            blockcv_training = blockcv_dir / "training_metrics.csv"
+            blockcv_folds = blockcv_dir / "blockcv_fold_metrics.csv"
+            blockcv_hosts = blockcv_dir / "blockcv_host_summary.csv"
+            for path in (blockcv_training, blockcv_folds, blockcv_hosts):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("host,value\nexample,1\n", encoding="utf-8")
+            blockcv_summary = blockcv_dir / "summary.json"
+            write_json(
+                blockcv_summary,
+                {
+                    "status": "complete",
+                    "selection_manifest": str(blockcv_selection),
+                    "selection_manifest_sha256": sha256(blockcv_selection),
+                    "training_metrics": str(blockcv_training),
+                    "training_metrics_sha256": sha256(blockcv_training),
+                    "fold_metrics": str(blockcv_folds),
+                    "host_summary": str(blockcv_hosts),
+                },
+            )
+            production_selection = root / "accepted" / "production_selection.json"
+            write_json(
+                production_selection,
+                {
+                    "status": "complete",
+                    "blockcv_evidence_summary": str(blockcv_summary),
+                    "blockcv_evidence_summary_sha256": sha256(blockcv_summary),
+                    "blockcv_host_summary": str(blockcv_hosts),
+                    "blockcv_host_summary_sha256": sha256(blockcv_hosts),
+                    "blockcv_fold_metrics": str(blockcv_folds),
+                    "blockcv_fold_metrics_sha256": sha256(blockcv_folds),
+                    "blockcv_selection_manifest": str(blockcv_selection),
+                    "blockcv_selection_manifest_sha256": sha256(blockcv_selection),
+                },
+            )
+
+            exposure = root / "accepted" / "shared_exposure_counts.csv"
+            exposure.write_text("domain,count\nexample,1\n", encoding="utf-8")
+            overlap_summary = root / "accepted" / "dataset_overlap_summary.json"
+            write_json(
+                overlap_summary,
+                {
+                    "status": "complete", "shared_exposure_counts": str(exposure),
+                    "shared_exposure_counts_sha256": sha256(exposure),
+                },
+            )
+            support_predictions = root / "accepted" / "common_support_predictions.csv"
+            pathway_correlations = root / "accepted" / "pathway_correlations.csv"
+            support_predictions.write_text("sample,prediction\n1,0.5\n", encoding="utf-8")
+            pathway_correlations.write_text("pathway,correlation\nfull,0.5\n", encoding="utf-8")
+            pathway_summary = root / "accepted" / "pathway_summary.json"
+            write_json(
+                pathway_summary,
+                {
+                    "status": "complete",
+                    "common_support_predictions": str(support_predictions),
+                    "common_support_predictions_sha256": sha256(support_predictions),
+                    "cross_host_pathway_correlations": str(pathway_correlations),
+                    "cross_host_pathway_correlations_sha256": sha256(pathway_correlations),
+                },
+            )
+            host_acceptance = root / "accepted" / "host_acceptance.csv"
+            host_acceptance.write_text("host,passed\nexample,true\n", encoding="utf-8")
+
+            def make_artifact_batch(name, selected_hosts, exact=False):
+                batch_root = root / "artifacts" / name
+                selected_experiments = [experiments[host] for host in selected_hosts]
+                write_json(
+                    batch_root / "batch_status.json",
+                    {
+                        "status": "complete", "candidate_count": len(selected_experiments),
+                        "completed_experiments": selected_experiments,
+                    },
+                )
+                for experiment in selected_experiments:
+                    candidate = batch_root / experiment
+                    write_json(candidate / "summary.json", {"status": "complete"})
+                    if exact:
+                        (candidate / "exact_overlap_candidate_metrics.csv").write_text(
+                            "value\n1\n", encoding="utf-8"
+                        )
+                        (candidate / "paired_june_comparison.csv").write_text(
+                            "value\n1\n", encoding="utf-8"
+                        )
+                    else:
+                        (candidate / "pair_metrics.csv").write_text("value\n1\n", encoding="utf-8")
+                        comparison = candidate / "june_baseline_comparison"
+                        write_json(comparison / "summary.json", {"status": "complete"})
+                        (comparison / "paired_artifact_comparison.csv").write_text(
+                            "value\n1\n", encoding="utf-8"
+                        )
+                return batch_root
+
+            eastern_hosts = [host for host in hosts if host != "notholithocarpus_densiflorus"]
+            raw_artifact = make_artifact_batch("raw_matched", hosts)
+            configured_artifact = make_artifact_batch("configured_matched", hosts)
+            raw_exact = make_artifact_batch("raw_exact", eastern_hosts, exact=True)
+            configured_exact = make_artifact_batch("configured_exact", eastern_hosts, exact=True)
+
             acceptance = root / "acceptance.json"
             write_json(
                 acceptance,
                 {
                     "status": "complete",
                     "production_ready_for_inference": True,
-                    **pointer_paths,
+                    "training_metrics": str(training_metrics),
+                    "training_metrics_sha256": sha256(training_metrics),
                     "blockcv_evidence_dir": str(blockcv_dir),
+                    "blockcv_summary_sha256": sha256(blockcv_summary),
+                    "production_selection_manifest": str(production_selection),
+                    "production_selection_manifest_sha256": sha256(production_selection),
+                    "dataset_overlap_summary": str(overlap_summary),
+                    "dataset_overlap_summary_sha256": sha256(overlap_summary),
+                    "pathway_summary": str(pathway_summary),
+                    "pathway_summary_sha256": sha256(pathway_summary),
+                    "host_acceptance": str(host_acceptance),
+                    "host_acceptance_sha256": sha256(host_acceptance),
+                    "raw_artifact_roots": [str(raw_artifact)],
+                    "configured_artifact_roots": [str(configured_artifact)],
+                    "raw_exact_overlap_roots": [str(raw_exact)],
+                    "configured_exact_overlap_roots": [str(configured_exact)],
                 },
             )
             bundle = root / "bundle.json"
+            bundle_files = {
+                "code_snapshot/inference_multimodal_production.py": "inference code\n",
+                "code_snapshot/model.py": "model code\n",
+                "production_experiment_registry.tsv": registry.read_text(encoding="utf-8"),
+                "final_model_acceptance_summary.json": acceptance.read_text(encoding="utf-8"),
+            }
+            bundle_hashes = {}
+            for relative, content in bundle_files.items():
+                bundled_path = root / relative
+                bundled_path.parent.mkdir(parents=True, exist_ok=True)
+                bundled_path.write_text(content, encoding="utf-8")
+                bundle_hashes[relative] = sha256(bundled_path)
             write_json(
                 bundle,
                 {
@@ -300,6 +519,7 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                     "source_registry_sha256": sha256(registry),
                     "acceptance_summary_sha256": sha256(acceptance),
                     "code_commit": "deadbeef",
+                    "file_sha256": bundle_hashes,
                     "inference_defaults": {
                         "stride": 64,
                         "blend_window": "hann",
@@ -316,13 +536,75 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             visual_reviews = []
             for host in hosts:
                 region = "west" if host == "notholithocarpus_densiflorus" else "east"
+                candidate_dir = root / "candidates" / host
+                candidate_metadata = candidate_dir / "manifest_metadata.json"
+                candidate_csv = candidate_dir / "extraction_candidates.csv"
+                candidate_environment = candidate_dir / "extraction_environment_raw.csv"
+                candidate_csv.parent.mkdir(parents=True, exist_ok=True)
+                candidate_csv.write_text("sample_id\nexample\n", encoding="utf-8")
+                candidate_environment.write_text("sample_id,value\nexample,1\n", encoding="utf-8")
+                write_json(candidate_metadata, {"status": "complete"})
+                materialization_state = root / "materialized" / host / "materialization_run.json"
+                write_json(
+                    materialization_state,
+                    {
+                        "status": "complete",
+                        "identity": {
+                            "extraction_candidates_sha256": sha256(candidate_csv),
+                            "extraction_environment_raw_sha256": sha256(candidate_environment),
+                        },
+                    },
+                )
                 path = root / "provenance" / host / "summary.json"
-                write_json(path, {"status": "complete", "production_ready": True, "host": host})
+                write_json(
+                    path,
+                    {
+                        "status": "complete", "production_ready": True, "host": host,
+                        "candidate_metadata": str(candidate_metadata),
+                        "candidate_metadata_sha256": sha256(candidate_metadata),
+                        "materialization_state": str(materialization_state),
+                        "materialization_state_sha256": sha256(materialization_state),
+                    },
+                )
                 provenance.append(path)
+                progress = root / "materialized" / host / "progress.jsonl"
+                canonical = root / "materialized" / host / "canonical_records.jsonl"
+                progress.write_text('{"status":"success"}\n', encoding="utf-8")
+                canonical.write_text('{"status":"success"}\n', encoding="utf-8")
+                qa_outputs = {}
+                for label in (
+                    "class_attrition", "source_domain_attrition", "failure_types",
+                    "final_manifest_domain_shift",
+                ):
+                    qa_path = root / "attrition" / host / f"{label}.csv"
+                    qa_path.parent.mkdir(parents=True, exist_ok=True)
+                    qa_path.write_text("value\n1\n", encoding="utf-8")
+                    qa_outputs[label] = str(qa_path)
                 path = root / "attrition" / host / "summary.json"
-                write_json(path, {"status": "complete", "production_ready": True, "host": host})
+                attrition_inputs = {
+                    "candidate_csv": str(candidate_csv),
+                    "candidate_metadata": str(candidate_metadata),
+                    "progress_jsonl": str(progress),
+                    "canonical_records": str(canonical),
+                    "materialization_state": str(materialization_state),
+                }
+                attrition_inputs.update(
+                    {f"{key}_sha256": sha256(Path(value)) for key, value in list(attrition_inputs.items())}
+                )
+                write_json(
+                    path,
+                    {
+                        "status": "complete", "production_ready": True, "host": host,
+                        "inputs": attrition_inputs, "outputs": qa_outputs,
+                    },
+                )
                 attrition.append(path)
                 for product in ("deterministic", "uncertainty"):
+                    tile_manifest = root / "inference" / host / product / "tiles.csv"
+                    tile_qa = root / "inference" / host / product / "tile_output_qa.csv"
+                    tile_manifest.parent.mkdir(parents=True, exist_ok=True)
+                    tile_manifest.write_text("path\nexample.tif\n", encoding="utf-8")
+                    tile_qa.write_text("tile,passed\nexample,true\n", encoding="utf-8")
                     path = root / "inference" / host / product / "summary.json"
                     write_json(
                         path,
@@ -330,6 +612,10 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                             "status": "complete", "production_ready": True,
                             "host": host, "region": region, "product": product,
                             "expected_score_space": "raw_sigmoid_probability",
+                            "tile_manifest": str(tile_manifest),
+                            "tile_manifest_sha256": sha256(tile_manifest),
+                            "tile_output_qa": str(tile_qa),
+                            "tile_output_qa_sha256": sha256(tile_qa),
                         },
                     )
                     inference.append(path)
@@ -339,11 +625,20 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                     raster.parent.mkdir(parents=True, exist_ok=True)
                     raster.write_bytes(f"{host}-{product}".encode())
                     products[product] = {"path": str(raster), "sha256": sha256(raster)}
+                quickview_outputs = {}
+                for label in ("probability_framed", "uncertainty_framed"):
+                    quickview_image = root / "mosaics" / host / f"{label}.png"
+                    quickview_image.write_bytes(f"{host}-{label}".encode())
+                    quickview_outputs[label] = str(quickview_image)
+                quickview_summary = root / "mosaics" / host / "quickview_summary.json"
+                write_json(quickview_summary, {"status": "complete", "outputs": quickview_outputs})
                 path = root / "mosaics" / host / "qa.json"
                 payload = {
                     "status": "complete",
                     "production_ready_for_visual_review": True,
                     "host": host, "region": region, "products": products,
+                    "quickview_summary": str(quickview_summary),
+                    "quickview_summary_sha256": sha256(quickview_summary),
                 }
                 write_json(path, payload)
                 mosaics.append(path)
@@ -354,6 +649,8 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                         "mosaic_qa_summary_sha256": sha256(path),
                     }
                 )
+            review_spec = root / "review_spec.json"
+            write_json(review_spec, {"reviewer": "test"})
             visual = root / "visual.json"
             write_json(
                 visual,
@@ -361,6 +658,8 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                     "status": "complete",
                     "approved_for_release_evidence": True,
                     "reviews": visual_reviews,
+                    "review_spec": str(review_spec),
+                    "review_spec_sha256": sha256(review_spec),
                 },
             )
             correlation = root / "correlation.json"
@@ -382,7 +681,7 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             )
             self.assertTrue(result["production_ready_for_collaborator_review"])
             self.assertTrue((root / "release" / "PRODUCTION_READY").is_file())
-            self.assertGreater(result["indexed_artifact_count"], 20)
+            self.assertGreater(result["indexed_artifact_count"], 150)
 
 
 if __name__ == "__main__":
