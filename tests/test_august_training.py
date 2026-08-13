@@ -30,6 +30,7 @@ from august2026_dataset_overlap_audit import build_overlap_audit, prepare_datase
 from august2026_cross_host_pathway_audit import correlation_metrics, residualize
 from august2026_final_model_acceptance import artifact_nonregression_gate
 from august2026_aligned_raster_correlation import aligned_raster_metrics
+from august2026_inference_output_qa import validate_triplet
 from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_freeze_dataset_selection import freeze_selection
 from august2026_loss_screen import build_loss_config, loss_experiment_name
@@ -219,6 +220,48 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_inference_output_qa_requires_hann_tags_and_zero_deterministic_uncertainty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            profile = {
+                "driver": "GTiff",
+                "width": 8,
+                "height": 8,
+                "count": 1,
+                "dtype": "uint8",
+                "crs": "EPSG:5070",
+                "transform": rasterio.transform.from_origin(0, 8, 1, 1),
+                "nodata": 0,
+            }
+            input_path = root / "tile.tif"
+            with rasterio.open(input_path, "w", **profile) as target:
+                target.write(np.ones((8, 8), dtype=np.uint8), 1)
+            tags = {
+                "blend_window": "hann",
+                "blend_edge_floor": "0.05",
+                "score_space": "raw_sigmoid_probability",
+            }
+            for suffix, dtype, nodata, values in (
+                ("prediction", "float32", -9999.0, np.full((8, 8), 0.4, np.float32)),
+                ("uncertainty", "float32", -9999.0, np.zeros((8, 8), np.float32)),
+                ("count", "uint16", 0, np.full((8, 8), 4, np.uint16)),
+            ):
+                path = root / f"tile_{suffix}.tif"
+                output_profile = {**profile, "dtype": dtype, "nodata": nodata}
+                with rasterio.open(path, "w", **output_profile) as target:
+                    target.write(values, 1)
+                    target.update_tags(**tags)
+            result = validate_triplet(
+                input_path,
+                root / "tile_prediction.tif",
+                root / "tile_uncertainty.tif",
+                root / "tile_count.tif",
+                "raw_sigmoid_probability",
+                None,
+                "deterministic",
+            )
+            self.assertTrue(result["passed"], result["failures"])
+
     def test_aligned_raster_correlation_streams_exact_pearson(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -16,6 +16,8 @@ from august2026_summarize_experiments import read_json, sha256, write_json_atomi
 
 CODE_FILES = ["inference_multimodal_production.py", "model.py"]
 SUPPORT_FILES = [
+    "august2026_inference_output_qa.py",
+    "august2026_summarize_experiments.py",
     "build_archive_manifests.py",
     "make_tile_shards.py",
     "resolve_production_candidate.py",
@@ -68,8 +70,13 @@ def prepare_bundle(
         shutil.copy2(code_root / name, target)
         hashes[f"code_snapshot/{name}"] = sha256(target)
     for name in SUPPORT_FILES:
+        source = (
+            code_root / name
+            if name.startswith("august2026_")
+            else support_root / name
+        )
         target = output_dir / name
-        shutil.copy2(support_root / name, target)
+        shutil.copy2(source, target)
         target.chmod(0o755)
         hashes[name] = sha256(target)
     registry_copy = output_dir / "production_experiment_registry.tsv"
