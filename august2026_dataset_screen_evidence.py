@@ -149,6 +149,10 @@ def load_artifact_rows(artifact_roots: list[Path]) -> pd.DataFrame:
                         "candidate_checkpoint_sha256"
                     ],
                     "artifact_dataset_sha256": comparison["candidate_dataset_sha256"],
+                    "artifact_score_space": probe.get("score_space"),
+                    "artifact_platt_calibrator_sha256": probe.get(
+                        "platt_calibrator_sha256"
+                    ),
                     "artifact_probe_summary": str(probe_path.resolve()),
                     "artifact_comparison_summary": str(comparison_path.resolve()),
                 }
@@ -213,6 +217,10 @@ def load_exact_overlap_rows(exact_roots: list[Path]) -> pd.DataFrame:
                     ],
                     "exact_overlap_checkpoint_sha256": summary["checkpoint_sha256"],
                     "exact_overlap_dataset_sha256": summary["dataset_sha256"],
+                    "exact_overlap_score_space": summary.get("score_space"),
+                    "exact_overlap_platt_calibrator_sha256": summary.get(
+                        "platt_calibrator_sha256"
+                    ),
                     "exact_overlap_summary": str(summary_path.resolve()),
                 }
             )

@@ -27,6 +27,7 @@ from august2026_batch_artifact_probe import reusable_completed_probe
 from august2026_dataset_screen_evidence import pareto_nondominated, synthesize
 from august2026_dataset_overlap_audit import build_overlap_audit, prepare_dataset
 from august2026_cross_host_pathway_audit import correlation_metrics, residualize
+from august2026_final_model_acceptance import artifact_nonregression_gate
 from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_freeze_dataset_selection import freeze_selection
 from august2026_loss_screen import build_loss_config, loss_experiment_name
@@ -216,6 +217,17 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_final_artifact_gate_is_strict_for_seam_positive_hosts(self):
+        self.assertTrue(
+            artifact_nonregression_gate("vitis_labrusca", 0.08, 0.08)["passed"]
+        )
+        self.assertFalse(
+            artifact_nonregression_gate("vitis_labrusca", 0.08, 0.081)["passed"]
+        )
+        control = artifact_nonregression_gate("ailanthus_altissima", 0.01, 0.012)
+        self.assertTrue(control["passed"])
+        self.assertAlmostEqual(control["allowed_maximum"], 0.0125)
+
     def test_cross_host_pathway_residual_removes_environment_signal(self):
         environment = np.linspace(-2.0, 2.0, 100)
         outcome = 0.25 + 0.5 * environment
