@@ -109,6 +109,48 @@ def summarize_row(row: dict, design_commit: str | None) -> dict:
     result.update(_prefixed(read_json(required["test_calibration"]), "test_calibration"))
     result.update(_prefixed(read_json(required["validation_threshold"]), "threshold"))
     result.update(_prefixed(training_design, "training"))
+    config = read_json(config_path)
+    postfit_calibration = str(config.get("postfit_calibration", "none")).lower()
+    result["postfit_calibration"] = postfit_calibration
+    if postfit_calibration == "platt":
+        calibrated_required = {
+            "platt_calibrator": run_dir / "platt_calibrator.json",
+            "test_platt_metrics": run_dir / "test_metrics_platt.json",
+            "test_platt_calibration": run_dir / "test_platt_calibration_metrics.json",
+            "test_platt_predictions": run_dir / "prediction_results_platt.csv",
+        }
+        missing_calibrated = [
+            name for name, path in calibrated_required.items() if not path.is_file()
+        ]
+        if missing_calibrated:
+            failures.append("missing_platt:" + ",".join(missing_calibrated))
+        else:
+            result.update(
+                _prefixed(
+                    read_json(calibrated_required["platt_calibrator"]),
+                    "platt_calibrator",
+                )
+            )
+            result.update(
+                _prefixed(
+                    read_json(calibrated_required["test_platt_metrics"]),
+                    "test_platt",
+                )
+            )
+            result.update(
+                _prefixed(
+                    read_json(calibrated_required["test_platt_calibration"]),
+                    "test_platt_calibration",
+                )
+            )
+            result["platt_calibrator_sha256"] = sha256(
+                calibrated_required["platt_calibrator"]
+            )
+            result["test_platt_predictions_sha256"] = sha256(
+                calibrated_required["test_platt_predictions"]
+            )
+    elif postfit_calibration != "none":
+        failures.append(f"unknown_postfit_calibration={postfit_calibration}")
     result["best_checkpoint_sha256"] = sha256(required["best_checkpoint"])
     result["evidence_gate_passed"] = not failures
     result["evidence_gate_failures"] = ";".join(failures)

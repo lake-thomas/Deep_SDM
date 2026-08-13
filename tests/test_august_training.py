@@ -269,6 +269,73 @@ class AugustExperimentDesignTests(unittest.TestCase):
             self.assertEqual(status["incomplete_gate_count"], 1)
             self.assertFalse(status["all_experiments_evidence_complete"])
 
+    def test_platt_run_without_calibrated_evidence_fails_summary_gate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset = root / "dataset.csv"
+            dataset.write_text("split,presence\ntrain,1\n", encoding="utf-8")
+            config = root / "config.json"
+            config.write_text(
+                json.dumps(
+                    {"csv_path": str(dataset), "postfit_calibration": "platt"}
+                ),
+                encoding="utf-8",
+            )
+            run = root / "run"
+            (run / "checkpoints").mkdir(parents=True)
+            (run / "checkpoints" / "best.pt").write_bytes(b"checkpoint")
+            (run / "run_status.json").write_text(
+                json.dumps({"status": "completed"}), encoding="utf-8"
+            )
+            (run / "runtime_provenance.json").write_text(
+                json.dumps(
+                    {
+                        "git_dirty": False,
+                        "git_commit": "commit",
+                        "config_sha256": sha256(config),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run / "training_design.json").write_text(
+                json.dumps({"dataset_csv_sha256": sha256(dataset)}),
+                encoding="utf-8",
+            )
+            pd.DataFrame([{"val_loss": 0.2}]).to_csv(
+                run / "training_history.csv", index=False
+            )
+            pd.DataFrame([{"roc_auc_all_thresholds": 0.8}]).to_csv(
+                run / "model_summary_metrics.csv", index=False
+            )
+            for name in (
+                "validation_raw_calibration_metrics.json",
+                "test_raw_calibration_metrics.json",
+                "validation_threshold.json",
+            ):
+                (run / name).write_text(json.dumps({}), encoding="utf-8")
+            registry = root / "experiment_registry.tsv"
+            pd.DataFrame(
+                [
+                    {
+                        "stage": "blockcv",
+                        "host": "vitis_labrusca",
+                        "arm": "domain_balanced",
+                        "background_target": 10000,
+                        "split_design": "blockcv_1_heldout_fold",
+                        "experiment": "platt_missing",
+                        "config_path": str(config),
+                        "run_dir": str(run),
+                    }
+                ]
+            ).to_csv(registry, sep="\t", index=False)
+            (root / "design_metadata.json").write_text(
+                json.dumps({"code_commit": "commit"}), encoding="utf-8"
+            )
+            status = summarize_registry(registry, allow_incomplete=True)
+            self.assertEqual(status["complete_gate_count"], 0)
+            metrics = pd.read_csv(root / "analysis" / "experiment_metrics.csv")
+            self.assertIn("missing_platt", metrics.loc[0, "evidence_gate_failures"])
+
     def test_fixed_environment_pair_metric_uses_matched_did(self):
         pairs = pd.DataFrame(
             [
