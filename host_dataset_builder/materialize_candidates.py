@@ -410,6 +410,10 @@ def build_model_manifests(
     expected_presence_count = len(pd.read_csv(candidate_package / "presence_manifest.csv"))
     summary_rows = []
     hard_failures = []
+    # Nested targets and BlockCV rounds reuse most of the same chip paths. Keep
+    # one host-finalization cache so each path is still verified, but only once
+    # against the research filesystem during this immutable manifest build.
+    path_existence_cache: dict[str, bool] = {}
 
     manifest_root = output_root / "model_manifests"
     for arm in ["random", "domain_balanced"]:
@@ -455,6 +459,7 @@ def build_model_manifests(
                 enforce_source_tile_isolation=True,
                 enforce_spatial_block_isolation=False,
                 require_all_split_classes=True,
+                path_existence_cache=path_existence_cache,
             )
             write_manifest_qa_package(uniform_qa, target_root / "qa_uniform")
             if manifest_has_hard_failures(uniform_qa):
@@ -481,6 +486,7 @@ def build_model_manifests(
                     enforce_source_tile_isolation=True,
                     enforce_spatial_block_isolation=True,
                     require_all_split_classes=True,
+                    path_existence_cache=path_existence_cache,
                 )
                 write_manifest_qa_package(
                     round_qa,
@@ -515,6 +521,7 @@ def build_model_manifests(
         "production_ready_manifests": True,
         "manifest_count": len(summary) * (n_folds + 1),
         "uniform_design_count": len(summary),
+        "unique_materialized_paths_verified": len(path_existence_cache),
         "summary": summary.to_dict("records"),
     }
 

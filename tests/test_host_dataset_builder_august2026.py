@@ -651,6 +651,34 @@ class ManifestQATests(unittest.TestCase):
             self.assertTrue(status_path.is_file())
             self.assertTrue((root / "qa" / "background_domain_depth_summary.csv").is_file())
 
+    def test_manifest_path_cache_reuses_verified_materialized_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self._valid_manifest(root)
+            cache = {}
+            first = audit_dataset_manifest(
+                manifest,
+                dataset_root=root,
+                require_all_split_classes=False,
+                path_existence_cache=cache,
+            )
+            self.assertFalse(manifest_has_hard_failures(first))
+            self.assertEqual(
+                cache,
+                {
+                    str(root / "chip_a.tif"): True,
+                    str(root / "chip_b.tif"): True,
+                },
+            )
+            second = audit_dataset_manifest(
+                manifest,
+                dataset_root=root,
+                require_all_split_classes=False,
+                path_existence_cache=cache,
+            )
+            self.assertFalse(manifest_has_hard_failures(second))
+            self.assertEqual(len(cache), 2)
+
     def test_manifest_gate_detects_source_tile_leakage_and_provenance_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

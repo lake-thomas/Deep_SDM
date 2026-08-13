@@ -31,6 +31,7 @@ def audit_dataset_manifest(
     enforce_source_tile_isolation: bool = True,
     enforce_spatial_block_isolation: bool = True,
     require_all_split_classes: bool = True,
+    path_existence_cache: dict[str, bool] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Build machine-readable pre-fit QA tables without changing the manifest.
 
@@ -268,7 +269,16 @@ def audit_dataset_manifest(
                 path = Path(str(value)) if pd.notna(value) else None
                 if path is not None and not path.is_absolute():
                     path = root / path
-                if path is None or not path.is_file():
+                if path is None:
+                    exists = False
+                elif path_existence_cache is None:
+                    exists = path.is_file()
+                else:
+                    cache_key = str(path)
+                    if cache_key not in path_existence_cache:
+                        path_existence_cache[cache_key] = path.is_file()
+                    exists = path_existence_cache[cache_key]
+                if not exists:
                     path_failure_rows.append(
                         {
                             "row_index": row_index,
