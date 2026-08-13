@@ -25,6 +25,7 @@ from august2026_compare_artifact_probe import (
 )
 from august2026_batch_artifact_probe import reusable_completed_probe
 from august2026_dataset_screen_evidence import pareto_nondominated, synthesize
+from august2026_dataset_overlap_audit import build_overlap_audit, prepare_dataset
 from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_freeze_dataset_selection import freeze_selection
 from august2026_loss_screen import build_loss_config, loss_experiment_name
@@ -214,6 +215,55 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_cross_host_dataset_overlap_is_class_specific(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_path = root / "first.csv"
+            second_path = root / "second.csv"
+            common_columns = {
+                "source_domain_id": ["NY|2021|a", "NY|2021|a", "PA|2022|b"],
+                "source_archive_state": ["NY", "NY", "PA"],
+            }
+            pd.DataFrame(
+                {
+                    "presence": [0, 0, 1],
+                    "lat": [40.0, 41.0, 42.0],
+                    "lon": [-75.0, -76.0, -77.0],
+                    "source_tile_key": ["tile_a", "tile_b", "tile_c"],
+                    "source_local_path": ["a.tif", "b.tif", "c.tif"],
+                    **common_columns,
+                }
+            ).to_csv(first_path, index=False)
+            pd.DataFrame(
+                {
+                    "presence": [0, 0, 1],
+                    "lat": [40.0, 43.0, 44.0],
+                    "lon": [-75.0, -78.0, -79.0],
+                    "source_tile_key": ["tile_a", "tile_d", "tile_e"],
+                    "source_local_path": ["a.tif", "d.tif", "e.tif"],
+                    "source_domain_id": ["NY|2021|a", "VA|2022|c", "OH|2021|d"],
+                    "source_archive_state": ["NY", "VA", "OH"],
+                }
+            ).to_csv(second_path, index=False)
+            summary, exposure = build_overlap_audit(
+                prepare_dataset(first_path),
+                prepare_dataset(second_path),
+                "first",
+                "second",
+            )
+            background = summary["background"]["dimensions"]
+            self.assertEqual(background["location"]["intersection_unique"], 1)
+            self.assertEqual(background["location"]["union_unique"], 3)
+            self.assertAlmostEqual(background["location"]["jaccard"], 1 / 3)
+            self.assertEqual(
+                summary["presence"]["dimensions"]["location"]["intersection_unique"],
+                0,
+            )
+            self.assertEqual(
+                background["acquisition_domain"]["intersection_unique"], 1
+            )
+            self.assertEqual(set(exposure["class"]), {"all", "background", "presence"})
+
     def test_dataset_screen_is_the_approved_fourteen_run_matrix(self):
         specs = stage_specs("dataset-screen")
         self.assertEqual(len(specs), 14)
