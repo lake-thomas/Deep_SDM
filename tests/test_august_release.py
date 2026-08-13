@@ -213,6 +213,42 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             submission = pd.read_csv(submission_log, sep="\t")
             self.assertEqual(submission.loc[0, "job_id"], "DRY_RUN")
 
+    def test_hazel_mosaic_launcher_uses_three_task_dry_run_array(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            tile_manifest = root / "tiles.csv"
+            tile_manifest.write_text("path\n/archive/tile.tif\n", encoding="utf-8")
+            bundle = root / "bundle"
+            bundle.mkdir()
+            (bundle / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            submission_log = root / "mosaic_submission.tsv"
+            script = (
+                Path(__file__).resolve().parents[1]
+                / "hazel_august2026"
+                / "submit_release_mosaics.sh"
+            )
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "HPC_ROOT": str(root / "hpc"),
+                    "DURABLE_OUTPUT_ROOT": str(root / "durable"),
+                    "ACTIVE_OUTPUT_ROOT": str(root / "active"),
+                    "SUBMISSION_LOG": str(submission_log),
+                }
+            )
+            result = subprocess.run(
+                [
+                    "bash", str(script), "ailanthus_altissima",
+                    "east_of_mississippi", str(tile_manifest), str(bundle), "12",
+                ],
+                check=True, capture_output=True, text=True, env=environment,
+            )
+            self.assertIn("DRY_RUN mosaic_array_command=", result.stdout)
+            self.assertIn("--array=0-2%1", result.stdout)
+            submission = pd.read_csv(submission_log, sep="\t")
+            self.assertEqual(submission.loc[0, "mosaic_array_job_id"], "DRY_RUN")
+            self.assertEqual(submission.loc[0, "qa_job_id"], "DRY_RUN")
+
     def test_release_evidence_requires_complete_five_host_chain(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

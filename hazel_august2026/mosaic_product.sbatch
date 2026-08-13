@@ -5,22 +5,35 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=18:00:00
-#SBATCH --output=/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM/Outputs_Host_NAIP_SDMs/production_model_inference_august2026/_slurm_logs/%x-%j.out
-#SBATCH --error=/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM/Outputs_Host_NAIP_SDMs/production_model_inference_august2026/_slurm_logs/%x-%j.err
+#SBATCH --output=/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM/Outputs_Host_NAIP_SDMs/production_model_inference_august2026/_slurm_logs/%x-%A_%a.out
+#SBATCH --error=/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM/Outputs_Host_NAIP_SDMs/production_model_inference_august2026/_slurm_logs/%x-%A_%a.err
 
 set -euo pipefail
 
 HOST_SLUG="${HOST_SLUG:?Set HOST_SLUG}"
 REGION="${REGION:?Set REGION}"
-RELEASE_PRODUCT="${RELEASE_PRODUCT:?Set RELEASE_PRODUCT}"
-SOURCE_SUFFIX="${SOURCE_SUFFIX:?Set SOURCE_SUFFIX}"
-SOURCE_OUTPUT_ROOT="${SOURCE_OUTPUT_ROOT:?Set SOURCE_OUTPUT_ROOT}"
+RELEASE_PRODUCT="${RELEASE_PRODUCT:-}"
+SOURCE_SUFFIX="${SOURCE_SUFFIX:-}"
+SOURCE_OUTPUT_ROOT="${SOURCE_OUTPUT_ROOT:-}"
 TILE_MANIFEST="${TILE_MANIFEST:?Set TILE_MANIFEST}"
 BUNDLE_ROOT="${BUNDLE_ROOT:?Set BUNDLE_ROOT}"
+if [[ -z "${RELEASE_PRODUCT}" ]]; then
+  case "${SLURM_ARRAY_TASK_ID:?Set RELEASE_PRODUCT or run as a three-task Slurm array}" in
+    0) RELEASE_PRODUCT=prediction; SOURCE_PRODUCT=deterministic; SOURCE_SUFFIX=prediction ;;
+    1) RELEASE_PRODUCT=uncertainty; SOURCE_PRODUCT=uncertainty; SOURCE_SUFFIX=uncertainty ;;
+    2) RELEASE_PRODUCT=count; SOURCE_PRODUCT=deterministic; SOURCE_SUFFIX=count ;;
+    *) exit 2 ;;
+  esac
+  ACTIVE_OUTPUT_ROOT="${ACTIVE_OUTPUT_ROOT:-/share/rkmeente/talake2/host_sdm_august2026/production_model_inference_august2026}"
+  SOURCE_OUTPUT_ROOT="${ACTIVE_OUTPUT_ROOT}/${REGION}/${HOST_SLUG}/${SOURCE_PRODUCT}"
+fi
 if [[ "${RELEASE_PRODUCT}" != "prediction" && "${RELEASE_PRODUCT}" != "uncertainty" && "${RELEASE_PRODUCT}" != "count" ]]; then
   exit 2
 fi
 if [[ "${SOURCE_SUFFIX}" != "prediction" && "${SOURCE_SUFFIX}" != "uncertainty" && "${SOURCE_SUFFIX}" != "count" ]]; then
+  exit 2
+fi
+if [[ -z "${SOURCE_OUTPUT_ROOT}" ]]; then
   exit 2
 fi
 
