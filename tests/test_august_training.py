@@ -33,6 +33,7 @@ import august2026_materialization_attrition_audit as attrition_audit
 from august2026_materialization_attrition_audit import distribution_shift
 from august2026_wait_for_dataset_screen import smoke_evidence_ready
 from august2026_wait_for_control_screen import control_gates_ready
+from august2026_loss_screen_evidence import strict_evidence_gate
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -804,6 +805,23 @@ class AugustExperimentDesignTests(unittest.TestCase):
                 audits,
             )
         )
+
+    def test_loss_evidence_gate_rejects_incomplete_candidate(self):
+        complete = pd.DataFrame(
+            [{"experiment": "a", "evidence_gate_passed": "True"}]
+        )
+        strict_evidence_gate(complete)
+        incomplete = pd.DataFrame(
+            [
+                {
+                    "experiment": "a",
+                    "evidence_gate_passed": "False",
+                    "evidence_gate_failures": "missing:checkpoint",
+                }
+            ]
+        )
+        with self.assertRaisesRegex(RuntimeError, "Loss training evidence"):
+            strict_evidence_gate(incomplete)
 
 
 if __name__ == "__main__":
