@@ -18,6 +18,7 @@ from calibration_utils import (
     fit_platt_calibrator,
 )
 from august2026_experiments import filter_specs, stage_specs
+from august2026_fixed_env_artifact_probe import pair_metrics
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
 from model import HostModelBase
@@ -238,6 +239,40 @@ class AugustExperimentDesignTests(unittest.TestCase):
             self.assertEqual(status["complete_gate_count"], 0)
             self.assertEqual(status["incomplete_gate_count"], 1)
             self.assertFalse(status["all_experiments_evidence_complete"])
+
+    def test_fixed_environment_pair_metric_uses_matched_did(self):
+        pairs = pd.DataFrame(
+            [
+                {
+                    "pair_id": 7,
+                    "tile_i": "cross_a",
+                    "tile_j": "cross_b",
+                    "control_tile_i": "control_a",
+                    "control_tile_j": "control_b",
+                    "date_pair": "20210919|20220415",
+                    "mid_lon": -74.0,
+                    "mid_lat": 43.0,
+                }
+            ]
+        )
+        probabilities = {
+            "cross_a": 0.2,
+            "cross_b": 0.8,
+            "control_a": 0.4,
+            "control_b": 0.5,
+        }
+        features = {
+            "cross_a": np.array([1.0, 0.0]),
+            "cross_b": np.array([0.0, 1.0]),
+            "control_a": np.array([1.0, 0.0]),
+            "control_b": np.array([1.0, 0.0]),
+        }
+        raw = {tile: value.copy() for tile, value in features.items()}
+        result = pair_metrics("ny", pairs, features, probabilities, raw).iloc[0]
+        self.assertAlmostEqual(result["fixed_env_cross_absdiff"], 0.6)
+        self.assertAlmostEqual(result["fixed_env_control_absdiff"], 0.1)
+        self.assertAlmostEqual(result["fixed_env_prediction_did"], 0.5)
+        self.assertAlmostEqual(result["embedding_distance_did"], 1.0)
 
 
 if __name__ == "__main__":
