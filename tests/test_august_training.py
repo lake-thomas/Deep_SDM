@@ -23,6 +23,7 @@ from august2026_compare_artifact_probe import (
     paired_comparison,
 )
 from august2026_batch_artifact_probe import reusable_completed_probe
+from august2026_dataset_screen_evidence import pareto_nondominated, synthesize
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -363,6 +364,110 @@ class AugustExperimentDesignTests(unittest.TestCase):
             dataset.write_text("changed\n", encoding="utf-8")
             self.assertFalse(
                 reusable_completed_probe(output, checkpoint, config, dataset, pairs)
+            )
+
+    def test_dataset_screen_pareto_flags_do_not_use_an_arbitrary_score(self):
+        candidates = pd.DataFrame(
+            {
+                "test_roc_auc_all_thresholds": [0.90, 0.92, 0.89, 0.91],
+                "test_brier_score": [0.12, 0.11, 0.14, 0.09],
+                "artifact_candidate_absolute_did_mean": [0.05, 0.04, 0.08, 0.06],
+            }
+        )
+        objectives = {
+            "test_roc_auc_all_thresholds": "max",
+            "test_brier_score": "min",
+            "artifact_candidate_absolute_did_mean": "min",
+        }
+        self.assertEqual(
+            pareto_nondominated(candidates, objectives).tolist(),
+            [False, True, False, True],
+        )
+
+    def test_dataset_screen_synthesis_requires_and_joins_complete_evidence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            experiments = ["candidate_random", "candidate_domain_balanced"]
+            training_rows = []
+            for index, experiment in enumerate(experiments):
+                training_rows.append(
+                    {
+                        "experiment": experiment,
+                        "evidence_gate_passed": "True",
+                        "evidence_gate_failures": "",
+                        "stage": "dataset-screen",
+                        "host": "vitis_labrusca",
+                        "arm": "random" if index == 0 else "domain_balanced",
+                        "background_target": 6000,
+                        "best_checkpoint_sha256": f"checkpoint-{index}",
+                        "training_dataset_csv_sha256": f"dataset-{index}",
+                        "test_roc_auc_all_thresholds": 0.90 + index * 0.01,
+                        "test_average_precision_all_thresholds": 0.88 + index * 0.01,
+                        "test_brier_score": 0.10 - index * 0.01,
+                        "test_calibration_binary_log_loss": 0.30 - index * 0.01,
+                    }
+                )
+            training_path = root / "training.csv"
+            pd.DataFrame(training_rows).to_csv(training_path, index=False)
+
+            artifact_root = root / "artifacts"
+            completed = []
+            for index, experiment in enumerate(experiments):
+                candidate = artifact_root / experiment
+                comparison = candidate / "june_baseline_comparison"
+                comparison.mkdir(parents=True)
+                probe = {
+                    "status": "complete",
+                    "candidate_experiment": experiment,
+                    "checkpoint_sha256": f"checkpoint-{index}",
+                    "dataset_sha256": f"dataset-{index}",
+                }
+                comparison_summary = {
+                    "status": "complete",
+                    "diagnostic": "ny",
+                    "taxon": "vitis_labrusca",
+                    "pair_count": 253,
+                    "baseline_signed_did_mean": 0.08,
+                    "candidate_signed_did_mean": 0.06 - index * 0.01,
+                    "paired_signed_did_reduction_mean": 0.02 + index * 0.01,
+                    "paired_signed_did_reduction_bootstrap_95ci": [0.01, 0.03],
+                    "relative_signed_did_reduction": 0.25 + index * 0.1,
+                    "baseline_absolute_did_mean": 0.09,
+                    "candidate_absolute_did_mean": 0.07 - index * 0.01,
+                    "paired_absolute_did_reduction_mean": 0.02 + index * 0.01,
+                    "paired_absolute_did_reduction_bootstrap_95ci": [0.01, 0.03],
+                    "comparison_status": "statistically_supported_signed_reduction",
+                    "candidate_checkpoint_sha256": f"checkpoint-{index}",
+                    "candidate_dataset_sha256": f"dataset-{index}",
+                }
+                (candidate / "summary.json").write_text(
+                    json.dumps(probe), encoding="utf-8"
+                )
+                (comparison / "summary.json").write_text(
+                    json.dumps(comparison_summary), encoding="utf-8"
+                )
+                (candidate / "COMPLETED").write_text("complete\n", encoding="utf-8")
+                (comparison / "COMPLETED").write_text(
+                    "complete\n", encoding="utf-8"
+                )
+                completed.append(experiment)
+            (artifact_root / "batch_status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "candidate_count": 2,
+                        "completed_experiments": completed,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (artifact_root / "COMPLETED").write_text("complete\n", encoding="utf-8")
+            status = synthesize(
+                training_path, [artifact_root], root / "synthesis"
+            )
+            self.assertEqual(status["experiment_count"], 2)
+            self.assertTrue(
+                (root / "synthesis" / "combined_candidate_evidence.csv").is_file()
             )
 
 
