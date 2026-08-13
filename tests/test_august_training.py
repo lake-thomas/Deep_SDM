@@ -37,6 +37,7 @@ from august2026_loss_screen_evidence import strict_evidence_gate
 from august2026_augmentation_screen import augmentation_combinations, build_config as build_augmentation_config
 from august2026_blockcv import FOLDS, blockcv_name
 from august2026_blockcv_evidence import calibration_recommendation, summarize_values
+from august2026_production_train import production_name
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -970,6 +971,21 @@ class AugustExperimentDesignTests(unittest.TestCase):
         group.loc[1:4, "test_platt_calibration_binary_log_loss"] += 0.2
         recommendation = calibration_recommendation(group)
         self.assertEqual(recommendation["calibration_recommendation"], "raw")
+
+    def test_production_name_records_recipe_and_score_space(self):
+        selection = {
+            "host": "vitis_labrusca",
+            "arm": "domain_balanced",
+            "background_target": 10000,
+            "loss_strategy": "pos_weight_bce",
+            "radiometric_augmentation": {"enabled": True},
+            "dropout": 0.35,
+            "label_smoothing": 0.05,
+            "production_postfit_calibration": "platt",
+        }
+        name = production_name(selection)
+        self.assertIn("posw_rad1_d035_s005_platt", name)
+        self.assertTrue(name.endswith("20260813"))
 
 
 if __name__ == "__main__":
