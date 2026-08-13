@@ -20,6 +20,8 @@ VITIS_ROOT = Path(
 MATERIALIZATION_STATE = VITIS_ROOT / "materialization_run.json"
 PROGRESS = VITIS_ROOT / "materialization_progress.jsonl"
 STATUS = VITIS_ROOT.parent / "stage00_vitis_smoke_watch_status.json"
+ATTRITION_AUDIT_DIR = VITIS_ROOT / "qa" / "materialization_attrition_audit"
+ATTRITION_AUDIT_SUMMARY = ATTRITION_AUDIT_DIR / "summary.json"
 POLL_SECONDS = 60
 TIMEOUT_HOURS = 12
 
@@ -81,10 +83,41 @@ def main() -> None:
 
     write_status(
         {
+            "status": "running_vitis_materialization_attrition_audit",
+            "started_at": started_at,
+            "audit_started_at": now(),
+            "materialization_state": str(MATERIALIZATION_STATE),
+        }
+    )
+    audit_ready = False
+    if ATTRITION_AUDIT_SUMMARY.is_file():
+        audit = json.loads(ATTRITION_AUDIT_SUMMARY.read_text(encoding="utf-8"))
+        audit_ready = bool(
+            audit.get("status") == "complete" and audit.get("production_ready")
+        )
+    if not audit_ready:
+        if ATTRITION_AUDIT_DIR.exists():
+            raise RuntimeError(
+                f"Refusing partial or failed attrition audit: {ATTRITION_AUDIT_DIR}"
+            )
+        subprocess.run(
+            [
+                str(PYTHON),
+                str(CODE_ROOT / "august2026_materialization_attrition_audit.py"),
+                "--host",
+                "vitis_labrusca",
+            ],
+            cwd=CODE_ROOT,
+            check=True,
+        )
+
+    write_status(
+        {
             "status": "running_stage00_smoke",
             "started_at": started_at,
             "smoke_started_at": now(),
             "materialization_state": str(MATERIALIZATION_STATE),
+            "materialization_attrition_audit": str(ATTRITION_AUDIT_SUMMARY),
         }
     )
     subprocess.run(
@@ -104,6 +137,7 @@ def main() -> None:
             "started_at": started_at,
             "completed_at": now(),
             "materialization_state": str(MATERIALIZATION_STATE),
+            "materialization_attrition_audit": str(ATTRITION_AUDIT_SUMMARY),
         }
     )
 

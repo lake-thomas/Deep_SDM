@@ -53,6 +53,34 @@ def materialization_passed(host: str) -> bool:
     )
 
 
+def attrition_audit_passed(host: str) -> bool:
+    path = DATA_ROOT / host / "qa" / "materialization_attrition_audit" / "summary.json"
+    if not path.is_file():
+        return False
+    state = read_json(path)
+    return bool(state.get("status") == "complete" and state.get("production_ready"))
+
+
+def ensure_attrition_audit(host: str) -> None:
+    if attrition_audit_passed(host):
+        return
+    output = DATA_ROOT / host / "qa" / "materialization_attrition_audit"
+    if output.exists():
+        raise RuntimeError(f"Refusing partial or failed attrition audit: {output}")
+    subprocess.run(
+        [
+            str(PYTHON),
+            str(CODE_ROOT / "august2026_materialization_attrition_audit.py"),
+            "--host",
+            host,
+        ],
+        cwd=CODE_ROOT,
+        check=True,
+    )
+    if not attrition_audit_passed(host):
+        raise RuntimeError(f"Attrition audit completed without passing: {host}")
+
+
 def main() -> None:
     started_at = now()
     started = time.monotonic()
@@ -84,9 +112,13 @@ def main() -> None:
         )
         time.sleep(POLL_SECONDS)
 
+    for host in INITIAL_HOSTS:
+        ensure_attrition_audit(host)
+
     completed = []
     for host in CONTROL_HOSTS:
         if materialization_passed(host):
+            ensure_attrition_audit(host)
             completed.append(host)
             continue
         output = DATA_ROOT / host
@@ -114,6 +146,7 @@ def main() -> None:
         subprocess.run(command, cwd=CODE_ROOT, check=True)
         if not materialization_passed(host):
             raise RuntimeError(f"Control host completed without passing its gate: {host}")
+        ensure_attrition_audit(host)
         completed.append(host)
 
     write_status(

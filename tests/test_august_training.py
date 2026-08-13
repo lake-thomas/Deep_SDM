@@ -28,6 +28,7 @@ from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_freeze_dataset_selection import freeze_selection
 from august2026_loss_screen import build_loss_config, loss_experiment_name
 from august2026_exact_overlap_probe import compare_exact_overlap
+from august2026_materialization_attrition_audit import distribution_shift
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -624,6 +625,14 @@ class AugustExperimentDesignTests(unittest.TestCase):
             0.15,
         )
         self.assertTrue(summary["absolute_shift_reduction_supported"])
+
+    def test_materialization_attrition_audit_measures_domain_replacement_shift(self):
+        total_variation, maximum_shift = distribution_shift(
+            pd.Series(["a", "a", "b", "b"]),
+            pd.Series(["a", "b", "b", "b"]),
+        )
+        self.assertAlmostEqual(total_variation, 0.25)
+        self.assertAlmostEqual(maximum_shift, 0.25)
 
 
 if __name__ == "__main__":
