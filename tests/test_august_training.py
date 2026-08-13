@@ -34,6 +34,7 @@ from august2026_materialization_attrition_audit import distribution_shift
 from august2026_wait_for_dataset_screen import smoke_evidence_ready
 from august2026_wait_for_control_screen import control_gates_ready
 from august2026_loss_screen_evidence import strict_evidence_gate
+from august2026_augmentation_screen import augmentation_combinations, build_config as build_augmentation_config
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -822,6 +823,47 @@ class AugustExperimentDesignTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "Loss training evidence"):
             strict_evidence_gate(incomplete)
+
+    def test_augmentation_screen_is_seven_nonbaseline_factorial_arms(self):
+        combinations = augmentation_combinations()
+        self.assertEqual(len(combinations), 7)
+        self.assertNotIn(
+            {"radiometric": False, "dropout": 0.25, "label_smoothing": 0.0},
+            combinations,
+        )
+        self.assertIn(
+            {"radiometric": True, "dropout": 0.35, "label_smoothing": 0.05},
+            combinations,
+        )
+        source = {
+            "seed": 42,
+            "loss_strategy": "ordinary_bce",
+            "spatial_augmentation": "dihedral",
+            "radiometric_augmentation": False,
+            "dropout": 0.25,
+            "label_smoothing": 0.0,
+        }
+        selection = {
+            "host": "vitis_labrusca",
+            "arm": "domain_balanced",
+            "background_target": 10000,
+            "loss_strategy": "ordinary_bce",
+            "source_experiment": "baseline",
+            "source_checkpoint_sha256": "checkpoint",
+        }
+        config = build_augmentation_config(
+            source,
+            selection,
+            {"radiometric": True, "dropout": 0.35, "label_smoothing": 0.05},
+            {"enabled": True, "scene_gain": 0.08},
+            Path("/tmp/stage"),
+            Path("/tmp/selection.json"),
+            "selection-hash",
+            "calibration-hash",
+        )
+        self.assertEqual(config["dropout"], 0.35)
+        self.assertEqual(config["label_smoothing"], 0.05)
+        self.assertTrue(config["radiometric_augmentation"]["enabled"])
 
 
 if __name__ == "__main__":
