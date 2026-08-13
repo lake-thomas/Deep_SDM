@@ -147,7 +147,9 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             )
             (shards / "COMPLETED").write_text("completed\n", encoding="utf-8")
             registry = root / "registry.tsv"
-            registry.write_text("host\nailanthus_altissima\n", encoding="utf-8")
+            registry.write_text(
+                "host\nailanthus_altissima\njuglans_nigra\n", encoding="utf-8"
+            )
             bundle = root / "bundle"
             bundle.mkdir()
             (bundle / "COMPLETED").write_text("completed\n", encoding="utf-8")
@@ -160,14 +162,19 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                 [
                     "bash", str(script), "east_of_mississippi", "deterministic",
                     str(shards), str(registry), str(bundle), str(log),
-                    "ailanthus_altissima",
+                    "ailanthus_altissima", "juglans_nigra",
                 ],
                 check=True, capture_output=True, text=True, env=environment,
             )
             self.assertIn("DRY_RUN command=", result.stdout)
             submission = pd.read_csv(log, sep="\t")
+            self.assertEqual(len(submission), 2)
             self.assertEqual(submission.loc[0, "job_id"], "DRY_RUN")
+            self.assertEqual(submission.loc[1, "dependency_job_id"], "DRY_RUN")
             self.assertEqual(int(submission.loc[0, "dry_run"]), 1)
+            self.assertEqual(
+                int(submission["max_active_tasks_within_submission"].max()), 2
+            )
 
     def test_legacy_hazel_shard_launcher_routes_to_arrays(self):
         with tempfile.TemporaryDirectory() as temp_dir:
