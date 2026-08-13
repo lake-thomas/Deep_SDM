@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -28,6 +29,7 @@ from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_freeze_dataset_selection import freeze_selection
 from august2026_loss_screen import build_loss_config, loss_experiment_name
 from august2026_exact_overlap_probe import compare_exact_overlap
+import august2026_materialization_attrition_audit as attrition_audit
 from august2026_materialization_attrition_audit import distribution_shift
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
@@ -633,6 +635,91 @@ class AugustExperimentDesignTests(unittest.TestCase):
         )
         self.assertAlmostEqual(total_variation, 0.25)
         self.assertAlmostEqual(maximum_shift, 0.25)
+
+    def test_materialization_attrition_audit_passes_exact_synthetic_build(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            candidate_root = root / "candidates"
+            materialized_root = root / "materialized"
+            host = "vitis_labrusca"
+            package = candidate_root / host
+            dataset = materialized_root / host
+            package.mkdir(parents=True)
+            dataset.mkdir(parents=True)
+            rows = [
+                {
+                    "sample_id": "presence_1",
+                    "presence": 1,
+                    "source_domain_id": "A|2021|20210101",
+                    "random_nested_rank": 0,
+                    "domain_balanced_nested_rank": 0,
+                },
+                {
+                    "sample_id": "presence_2",
+                    "presence": 1,
+                    "source_domain_id": "B|2021|20210102",
+                    "random_nested_rank": 0,
+                    "domain_balanced_nested_rank": 0,
+                },
+            ]
+            for index, domain in enumerate(["A", "B", "C", "D"], start=1):
+                rows.append(
+                    {
+                        "sample_id": f"background_{index}",
+                        "presence": 0,
+                        "source_domain_id": f"{domain}|2022|20220101",
+                        "random_nested_rank": index,
+                        "domain_balanced_nested_rank": [2, 1, 4, 3][index - 1],
+                    }
+                )
+            candidates = pd.DataFrame(rows)
+            candidates.to_csv(package / "extraction_candidates.csv", index=False)
+            (package / "manifest_metadata.json").write_text(
+                json.dumps({"targets": [2]}), encoding="utf-8"
+            )
+            progress = pd.DataFrame(
+                {
+                    "sample_id": candidates["sample_id"],
+                    "materialization_status": "success",
+                    "failure_stage": None,
+                    "failure_type": None,
+                    "source_provenance_match": True,
+                    "intended_source_used": True,
+                    "actual_multi_acquisition": False,
+                    "actual_multi_state": False,
+                }
+            )
+            progress.to_json(
+                dataset / "materialization_progress.jsonl",
+                orient="records",
+                lines=True,
+            )
+            (dataset / "materialization_run.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "manifest_status": {"production_ready_manifests": True},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            for arm, backgrounds in {
+                "random": ["background_1", "background_2"],
+                "domain_balanced": ["background_2", "background_1"],
+            }.items():
+                target_root = dataset / "model_manifests" / arm / "background_00002"
+                target_root.mkdir(parents=True)
+                selected_ids = ["presence_1", "presence_2", *backgrounds]
+                candidates[candidates["sample_id"].isin(selected_ids)].to_csv(
+                    target_root / "uniform_dataset.csv", index=False
+                )
+            with (
+                patch.object(attrition_audit, "CANDIDATE_ROOT", candidate_root),
+                patch.object(attrition_audit, "MATERIALIZED_ROOT", materialized_root),
+            ):
+                summary = attrition_audit.audit_host(host, root / "audit")
+            self.assertTrue(summary["production_ready"])
+            self.assertEqual(summary["failed_rows"], 0)
 
 
 if __name__ == "__main__":
