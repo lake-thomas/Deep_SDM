@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import shlex
 from pathlib import Path
@@ -12,6 +13,14 @@ from pathlib import Path
 
 LOCAL_PREFIX = "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM"
 DEFAULT_HPC_ROOT = Path("/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM")
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def remap(path: str | Path, hpc_root: Path) -> Path:
@@ -59,6 +68,11 @@ def main() -> None:
         + shlex.quote(str(calibrator) if calibrator is not None else "")
     )
     print(f"EXPERIMENT={shlex.quote(row['experiment'])}")
+    print(f"SCORE_SPACE={shlex.quote(row['approved_score_space'])}")
+    print(
+        "CALIBRATOR_SHA256="
+        + shlex.quote(sha256(calibrator) if calibrator is not None else "")
+    )
 
 
 if __name__ == "__main__":

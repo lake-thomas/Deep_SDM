@@ -28,12 +28,14 @@ def validate_mosaics(
     failures = []
     products = {}
     reference = None
+    quickview = None
     for label, path in (
         ("prediction", prediction),
         ("uncertainty", uncertainty),
         ("count", count),
     ):
         info_path = path.with_name(f"{path.stem}_gdalinfo.json")
+        status_path = path.parent / "logs" / f"{label}_mosaic_status.json"
         if not path.is_file() or not info_path.is_file():
             failures.append(f"missing_{label}_or_gdalinfo")
             continue
@@ -80,6 +82,40 @@ def validate_mosaics(
         info = read_json(info_path)
         if not info.get("bands"):
             failures.append(f"{label}_gdalinfo_bands")
+        else:
+            band = info["bands"][0]
+            minimum = band.get("minimum")
+            maximum = band.get("maximum")
+            if minimum is None or maximum is None:
+                failures.append(f"{label}_gdalinfo_statistics")
+            elif label == "prediction" and (minimum < 0 or maximum > 1):
+                failures.append("prediction_range")
+            elif label == "uncertainty" and (minimum < 0 or maximum > 0.5 + 1e-6):
+                failures.append("uncertainty_range")
+            elif label == "count" and (minimum < 0 or maximum > 16):
+                failures.append("count_range")
+        if not status_path.is_file():
+            failures.append(f"missing_{label}_mosaic_status")
+        else:
+            status = read_json(status_path)
+            if status.get("status") != "complete":
+                failures.append(f"{label}_mosaic_status")
+            if status.get("release_product") != label:
+                failures.append(f"{label}_mosaic_product")
+            try:
+                observed_input_count = int(status.get("input_count", -1))
+            except (TypeError, ValueError):
+                observed_input_count = -1
+            if observed_input_count != expected_input_count:
+                failures.append(f"{label}_mosaic_input_count")
+            try:
+                status_output = Path(status.get("output", "")).resolve()
+            except (OSError, RuntimeError, TypeError):
+                status_output = None
+            if status_output != path.resolve():
+                failures.append(f"{label}_mosaic_output")
+            record["mosaic_status"] = str(status_path.resolve())
+            record["mosaic_status_sha256"] = sha256(status_path)
     if not quickview_summary.is_file():
         failures.append("missing_quickview_summary")
     else:
@@ -95,13 +131,22 @@ def validate_mosaics(
         for path in (quickview.get("outputs") or {}).values():
             if not Path(path).is_file():
                 failures.append("missing_quickview_png")
+        for label in ("prediction", "uncertainty", "count"):
+            if label in products and quickview.get(f"{label}_sha256") != products[label]["sha256"]:
+                failures.append(f"quickview_{label}_hash")
     return {
         "status": "complete",
         "production_ready_for_visual_review": not failures,
+        "host": quickview.get("host") if quickview else None,
+        "region": quickview.get("region") if quickview else None,
         "expected_input_count": expected_input_count,
         "target_epsg": 5070,
         "target_resolution_m": target_resolution,
         "products": products,
+        "quickview_summary": str(quickview_summary.resolve()),
+        "quickview_summary_sha256": (
+            sha256(quickview_summary) if quickview_summary.is_file() else None
+        ),
         "failure_count": len(failures),
         "failures": failures,
         "visual_review_required": True,

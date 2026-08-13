@@ -19,6 +19,8 @@ SUPPORT_FILES = [
     "august2026_inference_output_qa.py",
     "august2026_prepare_mosaic_inputs.py",
     "august2026_render_fixed_quickviews.py",
+    "august2026_record_visual_review.py",
+    "august2026_release_evidence.py",
     "august2026_validate_mosaics.py",
     "august2026_summarize_experiments.py",
     "build_archive_manifests.py",
@@ -27,6 +29,7 @@ SUPPORT_FILES = [
     "quickviews_and_mosaic_qa.sbatch",
     "resolve_production_candidate.py",
     "submit_inference.sbatch",
+    "submit_inference_qa.sbatch",
     "submit_release_mosaics.sh",
     "submit_shards.sh",
 ]

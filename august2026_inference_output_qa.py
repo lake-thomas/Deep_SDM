@@ -152,6 +152,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tile-manifest", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--host", required=True)
+    parser.add_argument("--region", required=True)
     parser.add_argument("--expected-score-space", required=True)
     parser.add_argument("--expected-calibrator-sha256", default=None)
     parser.add_argument("--product", choices=["deterministic", "uncertainty"], required=True)
@@ -209,6 +211,8 @@ def main() -> None:
     payload = {
         "status": "complete",
         "production_ready": not failures,
+        "host": args.host,
+        "region": args.region,
         "product": args.product,
         "tile_manifest": str(args.tile_manifest.resolve()),
         "tile_manifest_sha256": sha256(args.tile_manifest),
