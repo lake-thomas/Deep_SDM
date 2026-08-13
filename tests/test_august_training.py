@@ -32,6 +32,7 @@ from august2026_exact_overlap_probe import compare_exact_overlap
 import august2026_materialization_attrition_audit as attrition_audit
 from august2026_materialization_attrition_audit import distribution_shift
 from august2026_wait_for_dataset_screen import smoke_evidence_ready
+from august2026_wait_for_control_screen import control_gates_ready
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -781,6 +782,28 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertTrue(smoke_evidence_ready(metrics))
         metrics.loc[0, "test_brier_score"] = np.nan
         self.assertFalse(smoke_evidence_ready(metrics))
+
+    def test_control_screen_waits_for_materialization_stage01_and_all_audits(self):
+        audits = {
+            "ailanthus_altissima": True,
+            "juglans_nigra": True,
+            "prunus_serotina": True,
+        }
+        self.assertTrue(
+            control_gates_ready(
+                "control_materializations_completed",
+                "stage01_dataset_screen_evidence_completed",
+                audits,
+            )
+        )
+        audits["prunus_serotina"] = False
+        self.assertFalse(
+            control_gates_ready(
+                "control_materializations_completed",
+                "stage01_dataset_screen_evidence_completed",
+                audits,
+            )
+        )
 
 
 if __name__ == "__main__":
