@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from august2026_combine_dataset_screen_evidence import HOSTS
 from august2026_blockcv import blockcv_paths
 from august2026_loss_screen_evidence import strict_evidence_gate
 from august2026_summarize_experiments import read_json, sha256, write_json_atomic
@@ -132,6 +133,8 @@ def synthesize_blockcv(
     summary_rows = []
     hard_failures = []
     expected_hosts = {item["host"] for item in selections}
+    if expected_hosts != HOSTS:
+        raise ValueError("BlockCV evidence requires exactly the five production hosts")
     if set(metrics["host"]) != expected_hosts:
         raise ValueError("BlockCV host set differs from the selected recipes")
     for item in selections:

@@ -39,6 +39,14 @@ ACCEPTANCE_ROOT = OUTPUT_ROOT / "stage01_control_dataset_screen_acceptance_20260
 SYNTHESIS_ROOT = (
     REGISTRY.parent / "analysis" / "combined_control_dataset_screen_evidence"
 )
+INITIAL_SYNTHESIS_ROOT = (
+    DESIGN_ROOT / "stage01_dataset_screen_20260813" / "analysis"
+    / "combined_dataset_screen_evidence"
+)
+UNIFIED_SYNTHESIS_ROOT = (
+    DESIGN_ROOT / "stage01_all_host_dataset_screen_20260813" / "analysis"
+    / "combined_all_host_dataset_screen_evidence"
+)
 STATUS = DATA_ROOT / "stage01_control_dataset_screen_watch_status.json"
 POLL_SECONDS = 60
 TIMEOUT_HOURS = 60
@@ -213,14 +221,27 @@ def main_work() -> None:
     )
     run(command)
     write_status(
+        {"status": "combining_five_host_dataset_evidence", "updated_at": now()}
+    )
+    run(
+        [
+            str(PYTHON),
+            str(CODE_ROOT / "august2026_combine_dataset_screen_evidence.py"),
+            "--source-dir", str(INITIAL_SYNTHESIS_ROOT),
+            "--source-dir", str(SYNTHESIS_ROOT),
+            "--output-dir", str(UNIFIED_SYNTHESIS_ROOT),
+        ]
+    )
+    write_status(
         {
-            "status": "control_dataset_screen_evidence_completed",
+            "status": "five_host_dataset_screen_evidence_completed",
             "completed_at": now(),
             "registry": str(REGISTRY),
             "training_metrics": str(training_metrics),
             "matched_artifact_roots": [str(path) for path in matched_roots],
             "exact_overlap_roots": [str(path) for path in exact_roots],
             "synthesis": str(SYNTHESIS_ROOT),
+            "unified_five_host_synthesis": str(UNIFIED_SYNTHESIS_ROOT),
         }
     )
 

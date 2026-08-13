@@ -8,6 +8,7 @@ import subprocess
 from copy import deepcopy
 from pathlib import Path
 
+from august2026_combine_dataset_screen_evidence import HOSTS
 from august2026_experiments import (
     DATE_TAG,
     DESIGN_BASE,
@@ -87,8 +88,20 @@ def validate_selection(selection: dict) -> dict:
         / "materialization_attrition_audit"
         / "summary.json"
     )
+    provenance_path = (
+        Path(selection["image_dir"])
+        / "qa"
+        / "candidate_builder_provenance"
+        / "summary.json"
+    )
     if not audit_path.is_file() or not read_json(audit_path).get("production_ready"):
         raise RuntimeError(f"Materialization attrition audit is not ready: {audit_path}")
+    if not provenance_path.is_file() or not read_json(provenance_path).get(
+        "production_ready"
+    ):
+        raise RuntimeError(
+            f"Candidate/materializer provenance is not ready: {provenance_path}"
+        )
     return config
 
 
@@ -149,6 +162,12 @@ def build_config(
                     / "materialization_attrition_audit"
                     / "summary.json"
                 ),
+                "candidate_builder_provenance": str(
+                    Path(selection["image_dir"])
+                    / "qa"
+                    / "candidate_builder_provenance"
+                    / "summary.json"
+                ),
             },
             "selection_gate": {
                 "selection_manifest": str(selection_manifest.resolve()),
@@ -178,6 +197,8 @@ def write_design(selection_manifest: Path) -> tuple[Path, list[dict]]:
     selections = payload.get("selections") or []
     if not selections or len(selections) != payload.get("selection_count"):
         raise ValueError("BlockCV selection count is invalid")
+    if {item.get("host") for item in selections} != HOSTS:
+        raise ValueError("BlockCV selection must contain exactly the five production hosts")
     code_root = Path(__file__).resolve().parent
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=code_root, check=True,

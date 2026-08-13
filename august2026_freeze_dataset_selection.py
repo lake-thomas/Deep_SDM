@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from august2026_combine_dataset_screen_evidence import HOSTS
 from august2026_summarize_experiments import read_json, sha256, write_json_atomic
 
 
@@ -69,6 +70,8 @@ def freeze_selection(
     hosts = [choice[0] for choice in choices]
     if len(hosts) != len(set(hosts)):
         raise ValueError("Only one dataset choice is allowed per host")
+    if set(hosts) != HOSTS:
+        raise ValueError("Dataset selection must contain exactly the five production hosts")
     if set(hosts) != set(rationales):
         raise ValueError("Exactly one rationale is required for each selected host")
 

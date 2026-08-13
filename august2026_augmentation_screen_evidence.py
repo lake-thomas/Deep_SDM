@@ -108,6 +108,11 @@ def synthesize_augmentation_evidence(
             == new.loc[eastern, "exact_overlap_checkpoint_sha256"]
         ).all():
             raise ValueError("Augmentation exact-overlap checkpoint hashes disagree")
+        if not (
+            new.loc[eastern, "training_dataset_csv_sha256"]
+            == new.loc[eastern, "exact_overlap_dataset_sha256"]
+        ).all():
+            raise ValueError("Augmentation exact-overlap dataset hashes disagree")
     new["augmentation_candidate_origin"] = "new_factorial_run"
 
     expected_combinations = {

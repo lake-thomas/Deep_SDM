@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from august2026_combine_dataset_screen_evidence import HOSTS
 from august2026_freeze_dataset_selection import parse_rationale, strict_bool
 from august2026_summarize_experiments import read_json, sha256, write_json_atomic
 
@@ -42,6 +43,8 @@ def freeze_augmentation_selection(
     hosts = [host for host, _ in choices]
     if not choices or len(hosts) != len(set(hosts)):
         raise ValueError("Exactly one augmentation recipe is required per host")
+    if set(hosts) != HOSTS:
+        raise ValueError("BlockCV selection must contain exactly the five production hosts")
     if set(hosts) != set(rationales):
         raise ValueError("Exactly one rationale is required per host")
 

@@ -31,6 +31,7 @@ from august2026_cross_host_pathway_audit import correlation_metrics, residualize
 from august2026_final_model_acceptance import artifact_nonregression_gate
 from august2026_aligned_raster_correlation import aligned_raster_metrics
 from august2026_candidate_builder_provenance_audit import commit_matches
+from august2026_combine_dataset_screen_evidence import HOSTS, combine_evidence
 from august2026_inference_output_qa import validate_triplet
 from august2026_prepare_mosaic_inputs import prepare_inputs
 from august2026_calibrate_radiometric_augmentation import derive_recipe
@@ -928,44 +929,87 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertEqual(recipe["band_gain"], 0.02)
         self.assertEqual(recipe["max_mean_ndvi_shift"], 0.05)
 
+    def test_dataset_screen_evidence_join_requires_all_five_hosts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dirs = [root / "initial", root / "controls"]
+            host_groups = [
+                {"vitis_labrusca", "notholithocarpus_densiflorus"},
+                HOSTS - {"vitis_labrusca", "notholithocarpus_densiflorus"},
+            ]
+            for source_dir, hosts in zip(source_dirs, host_groups):
+                source_dir.mkdir()
+                rows = [
+                    {
+                        "host": host,
+                        "arm": "domain_balanced",
+                        "background_target": 6000,
+                        "experiment": f"dataset_screen_{host}",
+                        "evidence_gate_passed": True,
+                        "pareto_nondominated_within_host": True,
+                        "sentinel_metric": 0.25,
+                    }
+                    for host in sorted(hosts)
+                ]
+                pd.DataFrame(rows).to_csv(
+                    source_dir / "combined_candidate_evidence.csv", index=False
+                )
+                (source_dir / "summary.json").write_text(
+                    json.dumps({"status": "complete"}), encoding="utf-8"
+                )
+                (source_dir / "COMPLETED").write_text(
+                    "completed\n", encoding="utf-8"
+                )
+            output_dir = root / "unified"
+            payload = combine_evidence(source_dirs, output_dir)
+            combined = pd.read_csv(output_dir / "combined_candidate_evidence.csv")
+            self.assertEqual(payload["host_count"], 5)
+            self.assertEqual(set(combined["host"]), HOSTS)
+            self.assertTrue((combined["sentinel_metric"] == 0.25).all())
+            self.assertTrue((output_dir / "COMPLETED").is_file())
+
     def test_dataset_selection_freezes_exact_artifact_hashes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            dataset = root / "dataset.csv"
-            checkpoint = root / "checkpoints" / "best.pt"
-            config = root / "config.json"
-            dataset.write_text("split,presence\ntrain,1\n", encoding="utf-8")
-            checkpoint.parent.mkdir()
-            checkpoint.write_bytes(b"checkpoint")
-            source_config = {
-                "csv_path": str(dataset),
-                "image_dir": str(root),
-                "loss_strategy": "ordinary_bce",
-                "spatial_augmentation": "dihedral",
-                "radiometric_augmentation": False,
-                "dropout": 0.25,
-                "label_smoothing": 0.0,
-                "august_experiment_spec": {
-                    "host": "vitis_labrusca",
-                    "arm": "domain_balanced",
-                    "background_target": 6000,
-                },
-            }
-            config.write_text(json.dumps(source_config), encoding="utf-8")
             evidence = root / "evidence"
             evidence.mkdir()
-            combined = pd.DataFrame(
-                [
-                    {
-                        "host": "vitis_labrusca",
+            rows = []
+            choices = []
+            rationales = {}
+            checkpoint_by_host = {}
+            for host in sorted(HOSTS):
+                run_dir = root / host
+                dataset = run_dir / "dataset.csv"
+                checkpoint = run_dir / "checkpoints" / "best.pt"
+                config = run_dir / "config.json"
+                dataset.parent.mkdir(parents=True)
+                dataset.write_text("split,presence\ntrain,1\n", encoding="utf-8")
+                checkpoint.parent.mkdir()
+                checkpoint.write_bytes(f"checkpoint-{host}".encode())
+                source_config = {
+                    "csv_path": str(dataset),
+                    "image_dir": str(run_dir),
+                    "loss_strategy": "ordinary_bce",
+                    "spatial_augmentation": "dihedral",
+                    "radiometric_augmentation": False,
+                    "dropout": 0.25,
+                    "label_smoothing": 0.0,
+                    "august_experiment_spec": {
+                        "host": host,
                         "arm": "domain_balanced",
                         "background_target": 6000,
-                        "experiment": "ordinary_baseline",
+                    },
+                }
+                config.write_text(json.dumps(source_config), encoding="utf-8")
+                experiment = f"ordinary_baseline_{host}"
+                rows.append(
+                    {
+                        "host": host, "arm": "domain_balanced",
+                        "background_target": 6000, "experiment": experiment,
                         "evidence_gate_passed": True,
                         "pareto_nondominated_within_host": True,
-                        "config_path": str(config),
-                        "config_sha256": sha256(config),
-                        "run_dir": str(root),
+                        "config_path": str(config), "config_sha256": sha256(config),
+                        "run_dir": str(run_dir),
                         "best_checkpoint_sha256": sha256(checkpoint),
                         "training_dataset_csv_sha256": sha256(dataset),
                         "artifact_comparison_summary": "comparison.json",
@@ -974,8 +1018,11 @@ class AugustExperimentDesignTests(unittest.TestCase):
                         "test_roc_auc_all_thresholds": 0.95,
                         "test_brier_score": 0.08,
                     }
-                ]
-            )
+                )
+                choices.append((host, "domain_balanced", 6000))
+                rationales[host] = "Best seam/fit Pareto tradeoff."
+                checkpoint_by_host[host] = checkpoint
+            combined = pd.DataFrame(rows)
             combined.to_csv(evidence / "combined_candidate_evidence.csv", index=False)
             (evidence / "summary.json").write_text(
                 json.dumps({"status": "complete"}), encoding="utf-8"
@@ -984,15 +1031,18 @@ class AugustExperimentDesignTests(unittest.TestCase):
             output = root / "selection.json"
             payload = freeze_selection(
                 evidence,
-                [("vitis_labrusca", "domain_balanced", 6000)],
-                {"vitis_labrusca": "Best seam/fit Pareto tradeoff."},
+                choices,
+                rationales,
                 output,
                 "test-commit",
             )
-            self.assertEqual(payload["selection_count"], 1)
+            self.assertEqual(payload["selection_count"], 5)
+            selected_vitis = next(
+                item for item in payload["selections"] if item["host"] == "vitis_labrusca"
+            )
             self.assertEqual(
-                payload["selections"][0]["source_checkpoint_sha256"],
-                sha256(checkpoint),
+                selected_vitis["source_checkpoint_sha256"],
+                sha256(checkpoint_by_host["vitis_labrusca"]),
             )
 
     def test_loss_screen_reuses_ordinary_baseline_and_isolates_strategy(self):

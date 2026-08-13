@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from august2026_combine_dataset_screen_evidence import HOSTS
 from august2026_summarize_experiments import read_json, sha256, write_json_atomic
 
 
@@ -51,6 +52,8 @@ def freeze_production_selection(
 
     summaries = pd.read_csv(host_summary_path, low_memory=False)
     recipes = {item["host"]: item for item in selection["selections"]}
+    if set(recipes) != HOSTS:
+        raise ValueError("Production selection requires exactly the five production hosts")
     if set(summaries["host"]) != set(recipes):
         raise ValueError("BlockCV host summary differs from selected recipes")
     if not summaries["blockcv_production_gate_passed"].astype(bool).all():

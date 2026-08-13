@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from august2026_combine_dataset_screen_evidence import HOSTS
 from august2026_freeze_dataset_selection import (
     parse_rationale,
     strict_bool,
@@ -48,6 +49,8 @@ def freeze_loss_selection(
     hosts = [host for host, _ in choices]
     if not choices or len(hosts) != len(set(hosts)):
         raise ValueError("Exactly one loss choice is required per selected host")
+    if set(hosts) != HOSTS:
+        raise ValueError("Loss selection must contain exactly the five production hosts")
     if set(hosts) != set(rationales):
         raise ValueError("Exactly one rationale is required for each selected host")
 
