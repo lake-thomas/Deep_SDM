@@ -31,6 +31,7 @@ from august2026_loss_screen import build_loss_config, loss_experiment_name
 from august2026_exact_overlap_probe import compare_exact_overlap
 import august2026_materialization_attrition_audit as attrition_audit
 from august2026_materialization_attrition_audit import distribution_shift
+from august2026_wait_for_dataset_screen import smoke_evidence_ready
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -764,6 +765,22 @@ class AugustExperimentDesignTests(unittest.TestCase):
                 summary = attrition_audit.audit_host(host, root / "audit")
             self.assertTrue(summary["production_ready"])
             self.assertEqual(summary["failed_rows"], 0)
+
+    def test_stage00_smoke_gate_requires_complete_finite_evidence(self):
+        metrics = pd.DataFrame(
+            [
+                {
+                    "evidence_gate_passed": True,
+                    "epochs_completed": 2,
+                    "test_roc_auc_all_thresholds": 0.8,
+                    "test_brier_score": 0.2,
+                    "test_calibration_binary_log_loss": 0.5,
+                }
+            ]
+        )
+        self.assertTrue(smoke_evidence_ready(metrics))
+        metrics.loc[0, "test_brier_score"] = np.nan
+        self.assertFalse(smoke_evidence_ready(metrics))
 
 
 if __name__ == "__main__":
