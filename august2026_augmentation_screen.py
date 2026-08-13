@@ -9,6 +9,7 @@ import subprocess
 from copy import deepcopy
 from pathlib import Path
 
+from august2026_combine_dataset_screen_evidence import HOSTS
 from august2026_experiments import (
     DATE_TAG,
     DESIGN_BASE,
@@ -170,6 +171,8 @@ def write_design(selection_manifest: Path) -> tuple[Path, list[dict]]:
     selections = payload.get("selections") or []
     if not selections or len(selections) != payload.get("selection_count"):
         raise ValueError("Augmentation selection count is invalid")
+    if {item.get("host") for item in selections} != HOSTS:
+        raise ValueError("Augmentation screen requires exactly the five production hosts")
     calibration_hash = sha256(RADIOMETRIC_CALIBRATION)
     if calibration_hash != RADIOMETRIC_CALIBRATION_SHA256:
         raise ValueError("Frozen radiometric calibration hash changed")

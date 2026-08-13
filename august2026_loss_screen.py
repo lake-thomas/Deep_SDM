@@ -9,6 +9,7 @@ import subprocess
 from copy import deepcopy
 from pathlib import Path
 
+from august2026_combine_dataset_screen_evidence import HOSTS
 from august2026_experiments import (
     DATE_TAG,
     DESIGN_BASE,
@@ -165,6 +166,8 @@ def write_design(selection_manifest: Path) -> tuple[Path, list[dict]]:
     selections = selection_payload.get("selections") or []
     if len(selections) != selection_payload.get("selection_count") or not selections:
         raise ValueError("Selection manifest count is invalid")
+    if {item.get("host") for item in selections} != HOSTS:
+        raise ValueError("Loss screen requires exactly the five production hosts")
 
     code_root = Path(__file__).resolve().parent
     code_commit = subprocess.run(
