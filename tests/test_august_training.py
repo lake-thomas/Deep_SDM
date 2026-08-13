@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+import rasterio
 import torch
 import torch.nn.functional as F
 
@@ -28,6 +29,7 @@ from august2026_dataset_screen_evidence import pareto_nondominated, synthesize
 from august2026_dataset_overlap_audit import build_overlap_audit, prepare_dataset
 from august2026_cross_host_pathway_audit import correlation_metrics, residualize
 from august2026_final_model_acceptance import artifact_nonregression_gate
+from august2026_aligned_raster_correlation import aligned_raster_metrics
 from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_freeze_dataset_selection import freeze_selection
 from august2026_loss_screen import build_loss_config, loss_experiment_name
@@ -217,6 +219,33 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_aligned_raster_correlation_streams_exact_pearson(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_path = root / "first.tif"
+            second_path = root / "second.tif"
+            profile = {
+                "driver": "GTiff",
+                "width": 4,
+                "height": 4,
+                "count": 1,
+                "dtype": "float32",
+                "crs": "EPSG:5070",
+                "transform": rasterio.transform.from_origin(0, 4, 1, 1),
+                "nodata": -9999.0,
+            }
+            values = np.arange(16, dtype=np.float32).reshape(4, 4)
+            with rasterio.open(first_path, "w", **profile) as target:
+                target.write(values, 1)
+            with rasterio.open(second_path, "w", **profile) as target:
+                target.write(values * 2 + 1, 1)
+            metrics = aligned_raster_metrics(
+                first_path, second_path, sample_size=16, seed=42
+            )
+            self.assertEqual(metrics["joint_valid_pixel_count"], 16)
+            self.assertAlmostEqual(metrics["pearson"], 1.0)
+            self.assertAlmostEqual(metrics["spearman_reservoir_sample"], 1.0)
+
     def test_final_artifact_gate_is_strict_for_seam_positive_hosts(self):
         self.assertTrue(
             artifact_nonregression_gate("vitis_labrusca", 0.08, 0.08)["passed"]
