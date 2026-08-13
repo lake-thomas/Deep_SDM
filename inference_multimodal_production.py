@@ -37,17 +37,29 @@ Notes
 3. Topographic scalar summaries are computed from the same stack used by the
    model. If topography normalization is enabled, scalar summaries are also on
    the normalized scale, matching the dataset builder convention.
+4. Overlapping chip predictions use flat averaging by default. Pass
+   `--blend-window hann` to center-weight chip predictions while preserving an
+   explicit positive edge floor so every covered pixel retains support.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 
-# Respect scheduler/conda-provided GDAL/PROJ paths on Linux/HPC.
-conda_prefix = os.environ.get("CONDA_PREFIX")
-if conda_prefix:
-    os.environ.setdefault("GDAL_DATA", os.path.join(conda_prefix, "share", "gdal"))
-    os.environ.setdefault("PROJ_LIB", os.path.join(conda_prefix, "share", "proj"))
+# Respect valid scheduler/conda-provided GDAL/PROJ paths on Linux/HPC. Prefer
+# sys.prefix because CONDA_PREFIX can still identify the base environment when
+# a different environment's Python executable was called by absolute path.
+for prefix in [sys.prefix, os.environ.get("CONDA_PREFIX")]:
+    if not prefix:
+        continue
+    proj_dir = os.path.join(prefix, "share", "proj")
+    gdal_dir = os.path.join(prefix, "share", "gdal")
+    if os.path.isfile(os.path.join(proj_dir, "proj.db")):
+        os.environ.setdefault("PROJ_LIB", proj_dir)
+        os.environ.setdefault("PROJ_DATA", proj_dir)
+    if os.path.isdir(gdal_dir):
+        os.environ.setdefault("GDAL_DATA", gdal_dir)
 os.environ["PROJ_NETWORK"] = "OFF"
 if os.environ.get("PROJ_LIB"):
     os.environ.setdefault("PROJ_DATA", os.environ["PROJ_LIB"])
@@ -61,7 +73,6 @@ if os.name == "nt" and os.path.isdir(conda_env):
 
 import argparse
 import json
-import sys
 import time
 import traceback
 from pathlib import Path
@@ -898,6 +909,38 @@ def predict_batch(
 # -----------------------------------------------------------------------------
 
 
+def make_blend_weight(
+    chip_size: int,
+    mode: str = "flat",
+    edge_floor: float = 0.05,
+) -> np.ndarray:
+    """Return a normalized 2D weight window for scalar chip predictions."""
+    if chip_size < 1:
+        raise ValueError(f"chip_size must be positive, got {chip_size}")
+
+    mode = str(mode).strip().lower()
+    if mode == "flat":
+        return np.ones((chip_size, chip_size), dtype=np.float32)
+    if mode != "hann":
+        raise ValueError(f"Unsupported blend window: {mode!r}")
+
+    edge_floor = float(edge_floor)
+    if not np.isfinite(edge_floor) or not 0.0 < edge_floor <= 1.0:
+        raise ValueError(
+            f"blend_edge_floor must be in (0, 1] for Hann blending, got {edge_floor}"
+        )
+
+    one_d = np.hanning(chip_size).astype(np.float32)
+    weight = np.outer(one_d, one_d).astype(np.float32)
+    max_weight = float(weight.max())
+    if max_weight > 0.0:
+        weight /= max_weight
+    else:
+        weight.fill(1.0)
+    weight = edge_floor + (1.0 - edge_floor) * weight
+    return weight.astype(np.float32, copy=False)
+
+
 @torch.inference_mode()
 def run_inference_on_tile(
     tile_fp: Path,
@@ -926,8 +969,22 @@ def run_inference_on_tile(
     write_count: bool = True,
     naip_channels: int = 4,
     fast_topo_scalars: bool = False,
+    blend_window: str = "flat",
+    blend_edge_floor: float = 0.05,
 ) -> dict[str, Any]:
     """Run tiled inference for one NAIP tile."""
+    blend_window = str(blend_window).strip().lower()
+    blend_weight = make_blend_weight(
+        chip_size=chip_size,
+        mode=blend_window,
+        edge_floor=blend_edge_floor,
+    )
+    weighted_blend = blend_window == "hann"
+    if not weighted_blend:
+        # Preserve the default flat pixel arithmetic and avoid allocating a
+        # full-size floating weight accumulator.
+        blend_weight = None
+
     tile_name = tile_fp.stem
     output_dir.mkdir(parents=True, exist_ok=True)
     prediction_fp = output_dir / f"{tile_name}_prediction.tif"
@@ -936,7 +993,12 @@ def run_inference_on_tile(
 
     if skip_existing and prediction_fp.exists() and uncertainty_fp.exists():
         print(f"[SKIP] Existing outputs found for {tile_name}")
-        return {"tile": str(tile_fp), "status": "skipped_existing"}
+        return {
+            "tile": str(tile_fp),
+            "status": "skipped_existing",
+            "blend_window": blend_window,
+            "blend_edge_floor": float(blend_edge_floor) if weighted_blend else None,
+        }
 
     if req["env"] and (wc_rasters is None or ghm_raster is None):
         raise ValueError("Selected model requires tabular/env inputs but WorldClim/GHM rasters are unavailable.")
@@ -966,6 +1028,11 @@ def run_inference_on_tile(
         sum_array = np.zeros((height, width), dtype=np.float32)
         uncertainty_sum_array = np.zeros((height, width), dtype=np.float32)
         count_array = np.zeros((height, width), dtype=np.uint16)
+        weight_sum_array = (
+            np.zeros((height, width), dtype=np.float32)
+            if weighted_blend
+            else None
+        )
 
         rows = list(range(0, height - chip_size + 1, stride))
         cols = list(range(0, width - chip_size + 1, stride))
@@ -1027,8 +1094,14 @@ def run_inference_on_tile(
             std_probs = probs_stack.std(axis=0)
 
             for (row, col), mean_p, std_p in zip(locs, mean_probs, std_probs):
-                sum_array[row: row + chip_size, col: col + chip_size] += float(mean_p)
-                uncertainty_sum_array[row: row + chip_size, col: col + chip_size] += float(std_p)
+                target = np.s_[row: row + chip_size, col: col + chip_size]
+                if weighted_blend:
+                    sum_array[target] += float(mean_p) * blend_weight
+                    uncertainty_sum_array[target] += float(std_p) * blend_weight
+                    weight_sum_array[target] += blend_weight
+                else:
+                    sum_array[target] += float(mean_p)
+                    uncertainty_sum_array[target] += float(std_p)
                 count_array[row: row + chip_size, col: col + chip_size] += 1
                 processed += 1
 
@@ -1132,9 +1205,14 @@ def run_inference_on_tile(
         nodata = -9999.0
         prediction = np.full((height, width), nodata, dtype=np.float32)
         uncertainty = np.full((height, width), nodata, dtype=np.float32)
-        valid_count = count_array > 0
-        prediction[valid_count] = sum_array[valid_count] / count_array[valid_count]
-        uncertainty[valid_count] = uncertainty_sum_array[valid_count] / count_array[valid_count]
+        denominator = weight_sum_array if weighted_blend else count_array
+        valid_count = denominator > 0
+        prediction[valid_count] = sum_array[valid_count] / denominator[valid_count]
+        uncertainty[valid_count] = uncertainty_sum_array[valid_count] / denominator[valid_count]
+
+        blend_tags = {"blend_window": blend_window}
+        if weighted_blend:
+            blend_tags["blend_edge_floor"] = f"{float(blend_edge_floor):.8g}"
 
         profile = out_profile.copy()
         profile.update({
@@ -1152,10 +1230,12 @@ def run_inference_on_tile(
         with rasterio.open(prediction_fp, "w", **profile) as dst:
             dst.write(prediction, 1)
             dst.set_band_description(1, "predicted_presence_probability")
+            dst.update_tags(**blend_tags)
 
         with rasterio.open(uncertainty_fp, "w", **profile) as dst:
             dst.write(uncertainty, 1)
             dst.set_band_description(1, "mc_dropout_probability_std")
+            dst.update_tags(**blend_tags)
 
         if write_count:
             count_profile = out_profile.copy()
@@ -1172,6 +1252,7 @@ def run_inference_on_tile(
             with rasterio.open(count_fp, "w", **count_profile) as dst:
                 dst.write(count_array, 1)
                 dst.set_band_description(1, "prediction_count")
+                dst.update_tags(**blend_tags)
 
     elapsed = time.time() - start_time
     summary = {
@@ -1184,6 +1265,8 @@ def run_inference_on_tile(
         "skipped_image_chips": skipped_image,
         "skipped_topo_chips": skipped_topo,
         "skipped_env_chips": skipped_env,
+        "blend_window": blend_window,
+        "blend_edge_floor": float(blend_edge_floor) if weighted_blend else None,
         "elapsed_seconds": elapsed,
     }
     print(
@@ -1245,6 +1328,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fast-topo-scalars", action="store_true", help="Precompute tile-level topo scalar summaries for non-overlapping tabular topo features.")
     parser.add_argument("--chip-size", type=int, default=None, help="NAIP chip size in pixels. Default from config or 256.")
     parser.add_argument("--stride", type=int, default=None, help="Sliding-window stride in pixels. Default = chip-size.")
+    parser.add_argument(
+        "--blend-window",
+        choices=("flat", "hann"),
+        default="flat",
+        help="Overlap aggregation window. Default flat preserves existing inference behavior.",
+    )
+    parser.add_argument(
+        "--blend-edge-floor",
+        type=float,
+        default=0.05,
+        help="Positive minimum Hann weight in (0, 1]. Ignored for flat blending.",
+    )
     parser.add_argument("--batch-size", type=int, default=None, help="Inference batch size. Default from config or 64.")
     parser.add_argument("--mc-samples", type=int, default=2, help="MC dropout passes for uncertainty. Use 1 for deterministic inference.")
     parser.add_argument("--min-image-valid-frac", type=float, default=0.25, help="Minimum valid nonzero NAIP pixel fraction for image models.")
@@ -1392,6 +1487,8 @@ def main() -> None:
                     skip_existing=bool(args.skip_existing),
                     write_count=not bool(args.no_count),
                     naip_channels=int(config.get("naip_channels", 4)),
+                    blend_window=str(args.blend_window),
+                    blend_edge_floor=float(args.blend_edge_floor),
                 )
                 summaries.append(summary)
             except Exception as exc:

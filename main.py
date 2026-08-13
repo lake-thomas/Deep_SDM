@@ -14,11 +14,33 @@ Supports seven model_type values:
 from __future__ import annotations
 
 import os
+import sys
 
-conda_env = r"C:\Users\talake2\AppData\Local\anaconda3\envs\naip_ailanthus_env"
-os.environ["GDAL_DATA"] = os.path.join(conda_env, "Library", "share", "gdal")
-os.environ["PROJ_LIB"] = os.path.join(conda_env, "Library", "share", "proj")
-os.environ["PATH"] += os.pathsep + os.path.join(conda_env, "Library", "bin")
+# Set geospatial data paths only when the referenced installation is real.
+# ``sys.prefix`` is authoritative when an environment's Python executable is
+# invoked from a shell whose CONDA_PREFIX still points at the base environment.
+for prefix in [sys.prefix, os.environ.get("CONDA_PREFIX")]:
+    if not prefix:
+        continue
+    proj_dir = os.path.join(prefix, "share", "proj")
+    gdal_dir = os.path.join(prefix, "share", "gdal")
+    if os.path.isfile(os.path.join(proj_dir, "proj.db")):
+        os.environ.setdefault("PROJ_LIB", proj_dir)
+        os.environ.setdefault("PROJ_DATA", proj_dir)
+    if os.path.isdir(gdal_dir):
+        os.environ.setdefault("GDAL_DATA", gdal_dir)
+
+legacy_windows_env = r"C:\Users\talake2\AppData\Local\anaconda3\envs\naip_ailanthus_env"
+if os.name == "nt" and os.path.isdir(legacy_windows_env):
+    os.environ.setdefault(
+        "GDAL_DATA", os.path.join(legacy_windows_env, "Library", "share", "gdal")
+    )
+    os.environ.setdefault(
+        "PROJ_LIB", os.path.join(legacy_windows_env, "Library", "share", "proj")
+    )
+    os.environ["PATH"] += os.pathsep + os.path.join(
+        legacy_windows_env, "Library", "bin"
+    )
 
 import argparse
 import datetime as dt
@@ -29,7 +51,6 @@ import platform
 import random
 import socket
 import subprocess
-import sys
 import time
 from pathlib import Path
 
