@@ -242,14 +242,32 @@ def _strict_source_chip(
         # prior all-or-nothing rejection when an irrelevant overlapping index
         # polygon referred to a fractional-grid-offset neighbor.
         reference = datasets[0]
-        chip = np.zeros(
-            (reference.count, chip_size, chip_size),
-            dtype=np.dtype(reference.dtypes[0]),
+        window_inside_intended = (
+            chip_window.col_off >= 0
+            and chip_window.row_off >= 0
+            and chip_window.col_off + chip_window.width <= reference.width
+            and chip_window.row_off + chip_window.height <= reference.height
         )
-        covered = np.zeros((chip_size, chip_size), dtype=bool)
-        used_paths: list[str] = []
+        if window_inside_intended:
+            # The common path needs no mosaic or reprojection. Preserve the
+            # intended NAIP bytes exactly and ignore imprecise neighboring
+            # footprint polygons that happen to intersect the chip bbox.
+            chip = reference.read(window=chip_window)
+            if chip.shape != (reference.count, chip_size, chip_size):
+                return None
+            covered = np.ones((chip_size, chip_size), dtype=bool)
+            used_paths: list[str] = [source_paths[0]]
+        else:
+            chip = np.zeros(
+                (reference.count, chip_size, chip_size),
+                dtype=np.dtype(reference.dtypes[0]),
+            )
+            covered = np.zeros((chip_size, chip_size), dtype=bool)
+            used_paths = []
         resampled_neighbor = False
         for path, dataset in zip(source_paths, datasets):
+            if covered.all():
+                break
             if not _strict_sources_are_compatible([reference, dataset]):
                 continue
             raster_polygon = box(*dataset.bounds).__geo_interface__
@@ -298,8 +316,6 @@ def _strict_source_chip(
                     atol=1e-6,
                 )
             resampled_neighbor |= not bool(same_grid)
-            if covered.all():
-                break
 
         valid_frac = float(covered.mean())
         if valid_frac + 1e-12 < min_valid_frac:
