@@ -72,6 +72,7 @@ if os.name == "nt" and os.path.isdir(conda_env):
     os.environ["PATH"] += os.pathsep + os.path.join(conda_env, "Library", "bin")
 
 import argparse
+import hashlib
 import json
 import time
 import traceback
@@ -941,6 +942,49 @@ def make_blend_weight(
     return weight.astype(np.float32, copy=False)
 
 
+def file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_platt_calibrator(calibrator: dict | None) -> dict | None:
+    if calibrator is None:
+        return None
+    required = {"method", "intercept", "slope"}
+    missing = required - set(calibrator)
+    if missing:
+        raise ValueError(f"Platt calibrator is missing fields: {sorted(missing)}")
+    if calibrator["method"] != "platt_logistic_on_validation_logits":
+        raise ValueError(f"Unsupported calibrator method: {calibrator['method']}")
+    intercept = float(calibrator["intercept"])
+    slope = float(calibrator["slope"])
+    if not np.isfinite(intercept) or not np.isfinite(slope) or slope <= 0:
+        raise ValueError("Platt calibrator intercept/slope must be finite with slope > 0")
+    return {**calibrator, "intercept": intercept, "slope": slope}
+
+
+def apply_platt_probabilities(
+    probabilities: np.ndarray,
+    calibrator: dict | None,
+) -> np.ndarray:
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    if calibrator is None:
+        return probabilities.astype(np.float32)
+    calibrator = validate_platt_calibrator(calibrator)
+    clipped = np.clip(probabilities, 1e-6, 1.0 - 1e-6)
+    logits = np.log(clipped / (1.0 - clipped))
+    calibrated_logits = calibrator["intercept"] + calibrator["slope"] * logits
+    calibrated = np.empty_like(calibrated_logits)
+    nonnegative = calibrated_logits >= 0
+    calibrated[nonnegative] = 1.0 / (1.0 + np.exp(-calibrated_logits[nonnegative]))
+    exponent = np.exp(calibrated_logits[~nonnegative])
+    calibrated[~nonnegative] = exponent / (1.0 + exponent)
+    return calibrated.astype(np.float32)
+
+
 @torch.inference_mode()
 def run_inference_on_tile(
     tile_fp: Path,
@@ -971,6 +1015,8 @@ def run_inference_on_tile(
     fast_topo_scalars: bool = False,
     blend_window: str = "flat",
     blend_edge_floor: float = 0.05,
+    platt_calibrator: dict | None = None,
+    platt_calibrator_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Run tiled inference for one NAIP tile."""
     blend_window = str(blend_window).strip().lower()
@@ -980,6 +1026,14 @@ def run_inference_on_tile(
         edge_floor=blend_edge_floor,
     )
     weighted_blend = blend_window == "hann"
+    platt_calibrator = validate_platt_calibrator(platt_calibrator)
+    score_space = (
+        "platt_calibrated_probability"
+        if platt_calibrator is not None
+        else "raw_sigmoid_probability"
+    )
+    if platt_calibrator is not None and not platt_calibrator_sha256:
+        raise ValueError("A calibrated inference run requires platt_calibrator_sha256")
     if not weighted_blend:
         # Preserve the default flat pixel arithmetic and avoid allocating a
         # full-size floating weight accumulator.
@@ -992,12 +1046,33 @@ def run_inference_on_tile(
     count_fp = output_dir / f"{tile_name}_count.tif"
 
     if skip_existing and prediction_fp.exists() and uncertainty_fp.exists():
+        expected_tags = {
+            "blend_window": blend_window,
+            "score_space": score_space,
+        }
+        if weighted_blend:
+            expected_tags["blend_edge_floor"] = f"{float(blend_edge_floor):.8g}"
+        if platt_calibrator_sha256:
+            expected_tags["platt_calibrator_sha256"] = platt_calibrator_sha256
+        with rasterio.open(prediction_fp) as existing:
+            existing_tags = existing.tags()
+        mismatches = {
+            key: {"expected": value, "found": existing_tags.get(key)}
+            for key, value in expected_tags.items()
+            if existing_tags.get(key) != value
+        }
+        if mismatches:
+            raise RuntimeError(
+                f"Refusing to skip existing output with incompatible provenance: {mismatches}"
+            )
         print(f"[SKIP] Existing outputs found for {tile_name}")
         return {
             "tile": str(tile_fp),
             "status": "skipped_existing",
             "blend_window": blend_window,
             "blend_edge_floor": float(blend_edge_floor) if weighted_blend else None,
+            "score_space": score_space,
+            "platt_calibrator_sha256": platt_calibrator_sha256,
         }
 
     if req["env"] and (wc_rasters is None or ghm_raster is None):
@@ -1087,6 +1162,7 @@ def run_inference_on_tile(
                 with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
                     logits = predict_batch(model, batch, model_type=model_type, req=req)
                     probs = torch.sigmoid(logits).detach().float().cpu().numpy().reshape(-1)
+                    probs = apply_platt_probabilities(probs, platt_calibrator)
                 probs_by_pass.append(probs)
 
             probs_stack = np.stack(probs_by_pass, axis=0)
@@ -1210,9 +1286,14 @@ def run_inference_on_tile(
         prediction[valid_count] = sum_array[valid_count] / denominator[valid_count]
         uncertainty[valid_count] = uncertainty_sum_array[valid_count] / denominator[valid_count]
 
-        blend_tags = {"blend_window": blend_window}
+        blend_tags = {
+            "blend_window": blend_window,
+            "score_space": score_space,
+        }
         if weighted_blend:
             blend_tags["blend_edge_floor"] = f"{float(blend_edge_floor):.8g}"
+        if platt_calibrator_sha256:
+            blend_tags["platt_calibrator_sha256"] = platt_calibrator_sha256
 
         profile = out_profile.copy()
         profile.update({
@@ -1229,12 +1310,12 @@ def run_inference_on_tile(
 
         with rasterio.open(prediction_fp, "w", **profile) as dst:
             dst.write(prediction, 1)
-            dst.set_band_description(1, "predicted_presence_probability")
+            dst.set_band_description(1, score_space)
             dst.update_tags(**blend_tags)
 
         with rasterio.open(uncertainty_fp, "w", **profile) as dst:
             dst.write(uncertainty, 1)
-            dst.set_band_description(1, "mc_dropout_probability_std")
+            dst.set_band_description(1, f"mc_dropout_{score_space}_std")
             dst.update_tags(**blend_tags)
 
         if write_count:
@@ -1267,6 +1348,8 @@ def run_inference_on_tile(
         "skipped_env_chips": skipped_env,
         "blend_window": blend_window,
         "blend_edge_floor": float(blend_edge_floor) if weighted_blend else None,
+        "score_space": score_space,
+        "platt_calibrator_sha256": platt_calibrator_sha256,
         "elapsed_seconds": elapsed,
     }
     print(
@@ -1347,6 +1430,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-existing", action="store_true", help="Skip tiles whose prediction and uncertainty rasters already exist.")
     parser.add_argument("--no-count", action="store_true", help="Do not write prediction-count rasters.")
     parser.add_argument("--strict-checkpoint", action="store_true", help="Require exact checkpoint/model key matching.")
+    parser.add_argument(
+        "--platt-calibrator",
+        type=str,
+        default=None,
+        help=(
+            "Optional validation-derived Platt calibrator JSON. The transform is "
+            "applied to every MC pass before probability means/std are aggregated."
+        ),
+    )
     parser.add_argument("--conda-env", type=str, default=None, help="Optional Windows conda env path for GDAL/PROJ variables.")
 
     return parser.parse_args()
@@ -1391,6 +1483,19 @@ def main() -> None:
         device=device,
         strict=bool(args.strict_checkpoint),
     )
+
+    platt_calibrator = None
+    platt_calibrator_sha256 = None
+    if args.platt_calibrator:
+        calibrator_path = Path(args.platt_calibrator)
+        if not calibrator_path.is_file():
+            raise FileNotFoundError(calibrator_path)
+        platt_calibrator = validate_platt_calibrator(load_json(str(calibrator_path)))
+        platt_calibrator_sha256 = file_sha256(calibrator_path)
+        print(
+            "Applying validation-derived Platt calibration; "
+            f"sha256={platt_calibrator_sha256}"
+        )
 
     if args.mc_samples > 1:
         print(f"Monte Carlo dropout uncertainty enabled with {args.mc_samples} passes.")
@@ -1489,6 +1594,8 @@ def main() -> None:
                     naip_channels=int(config.get("naip_channels", 4)),
                     blend_window=str(args.blend_window),
                     blend_edge_floor=float(args.blend_edge_floor),
+                    platt_calibrator=platt_calibrator,
+                    platt_calibrator_sha256=platt_calibrator_sha256,
                 )
                 summaries.append(summary)
             except Exception as exc:

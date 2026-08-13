@@ -54,6 +54,29 @@ class BlendWindowUnitTests(unittest.TestCase):
             args = inference.parse_args()
         self.assertEqual(args.blend_window, "flat")
         self.assertEqual(args.blend_edge_floor, 0.05)
+        self.assertIsNone(args.platt_calibrator)
+
+    def test_platt_transform_is_stable_bounded_and_monotonic(self):
+        probabilities = np.array([0.0, 0.1, 0.5, 0.9, 1.0])
+        calibrator = {
+            "method": "platt_logistic_on_validation_logits",
+            "intercept": -0.2,
+            "slope": 0.8,
+        }
+        calibrated = inference.apply_platt_probabilities(probabilities, calibrator)
+        self.assertTrue(np.isfinite(calibrated).all())
+        self.assertTrue(((calibrated > 0) & (calibrated < 1)).all())
+        self.assertTrue((np.diff(calibrated) > 0).all())
+
+    def test_platt_rejects_nonpositive_slope(self):
+        with self.assertRaises(ValueError):
+            inference.validate_platt_calibrator(
+                {
+                    "method": "platt_logistic_on_validation_logits",
+                    "intercept": 0,
+                    "slope": 0,
+                }
+            )
 
 
 class BlendWindowIntegrationTests(unittest.TestCase):
@@ -144,6 +167,47 @@ class BlendWindowIntegrationTests(unittest.TestCase):
         self.assertEqual(hann[0]["blend_edge_floor"], 0.05)
         self.assertEqual(hann[4]["blend_edge_floor"], "0.05")
         self.assertEqual(hann[5]["blend_window"], "hann")
+
+    def test_calibrated_inference_changes_scores_and_tags_score_space(self):
+        raw = self._run("raw_calibration_control", blend_window="hann")
+        calibrated = self._run(
+            "calibrated",
+            blend_window="hann",
+            platt_calibrator={
+                "method": "platt_logistic_on_validation_logits",
+                "intercept": -0.4,
+                "slope": 0.7,
+            },
+            platt_calibrator_sha256="test-calibrator-hash",
+        )
+        self.assertFalse(np.array_equal(calibrated[1], raw[1]))
+        self.assertTrue(
+            ((calibrated[1][calibrated[3] > 0] > 0)
+             & (calibrated[1][calibrated[3] > 0] < 1)).all()
+        )
+        self.assertEqual(calibrated[4]["score_space"], "platt_calibrated_probability")
+        self.assertEqual(
+            calibrated[4]["platt_calibrator_sha256"], "test-calibrator-hash"
+        )
+        self.assertEqual(
+            calibrated[0]["score_space"], "platt_calibrated_probability"
+        )
+
+    def test_skip_existing_refuses_changed_score_space(self):
+        self._run("skip_provenance", blend_window="hann")
+        with self.assertRaisesRegex(RuntimeError, "incompatible provenance"):
+            inference.run_inference_on_tile(
+                output_dir=self.root / "skip_provenance",
+                **self.arguments,
+                blend_window="hann",
+                skip_existing=True,
+                platt_calibrator={
+                    "method": "platt_logistic_on_validation_logits",
+                    "intercept": 0.0,
+                    "slope": 0.9,
+                },
+                platt_calibrator_sha256="changed-calibrator",
+            )
 
 
 if __name__ == "__main__":
