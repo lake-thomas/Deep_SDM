@@ -682,6 +682,30 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             self.assertTrue(result["production_ready_for_collaborator_review"])
             self.assertTrue((root / "release" / "PRODUCTION_READY").is_file())
             self.assertGreater(result["indexed_artifact_count"], 150)
+            artifact_index = pd.read_csv(result["artifact_index"])
+            self.assertTrue(
+                {
+                    "selected_training_dataset", "production_config",
+                    "production_checkpoint", "production_run_evidence",
+                    "selection_manifest", "blockcv_evidence",
+                    "raw_matched_boundary_candidate_evidence",
+                    "configured_exact_overlap_candidate_evidence",
+                    "hazel_bundle_file", "fixed_scale_quickview",
+                }.issubset(set(artifact_index["category"]))
+            )
+            self.assertEqual(
+                int((artifact_index["category"] == "selected_training_dataset").sum()),
+                5,
+            )
+            self.assertEqual(
+                int((artifact_index["category"] == "production_checkpoint").sum()),
+                5,
+            )
+            canonical = artifact_index[
+                (artifact_index["category"] == "materialization_input")
+                & artifact_index["path"].str.endswith("canonical_records.jsonl")
+            ]
+            self.assertEqual(len(canonical), 5)
 
 
 if __name__ == "__main__":
