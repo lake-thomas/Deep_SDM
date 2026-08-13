@@ -35,6 +35,7 @@ from august2026_wait_for_dataset_screen import smoke_evidence_ready
 from august2026_wait_for_control_screen import control_gates_ready
 from august2026_loss_screen_evidence import strict_evidence_gate
 from august2026_augmentation_screen import augmentation_combinations, build_config as build_augmentation_config
+from august2026_blockcv import FOLDS, blockcv_name
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -864,6 +865,21 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertEqual(config["dropout"], 0.35)
         self.assertEqual(config["label_smoothing"], 0.05)
         self.assertTrue(config["radiometric_augmentation"]["enabled"])
+
+    def test_blockcv_design_has_five_named_heldout_folds(self):
+        selection = {
+            "host": "vitis_labrusca",
+            "arm": "domain_balanced",
+            "background_target": 10000,
+            "loss_strategy": "ordinary_bce",
+            "radiometric_augmentation": {"enabled": True},
+            "dropout": 0.35,
+            "label_smoothing": 0.05,
+        }
+        self.assertEqual(FOLDS, [1, 2, 3, 4, 5])
+        names = [blockcv_name(selection, fold) for fold in FOLDS]
+        self.assertEqual(len(set(names)), 5)
+        self.assertTrue(names[0].endswith("blockcv1_20260813"))
 
 
 if __name__ == "__main__":
