@@ -169,6 +169,50 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             self.assertEqual(submission.loc[0, "job_id"], "DRY_RUN")
             self.assertEqual(int(submission.loc[0, "dry_run"]), 1)
 
+    def test_legacy_hazel_shard_launcher_routes_to_arrays(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            shards = root / "shards"
+            shards.mkdir()
+            (shards / "shard_00000.txt").write_text(
+                "/archive/tile.tif\n", encoding="utf-8"
+            )
+            write_json(
+                shards / "shard_metadata.json",
+                {"status": "complete", "shard_count": 1},
+            )
+            (shards / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            registry = root / "registry.tsv"
+            registry.write_text("host\nailanthus_altissima\n", encoding="utf-8")
+            bundle = root / "bundle"
+            bundle.mkdir()
+            (bundle / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            submission_log = root / "legacy_submission.tsv"
+            script = (
+                Path(__file__).resolve().parents[1]
+                / "hazel_august2026"
+                / "submit_shards.sh"
+            )
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "HPC_ROOT": str(root / "hpc"),
+                    "OUTPUT_ROOT": str(root / "active"),
+                    "SUBMISSION_LOG": str(submission_log),
+                }
+            )
+            result = subprocess.run(
+                [
+                    "bash", str(script), "east_of_mississippi", "deterministic",
+                    str(shards), str(registry), str(bundle), "ailanthus_altissima",
+                ],
+                check=True, capture_output=True, text=True, env=environment,
+            )
+            self.assertIn("routing all shards through bounded Slurm arrays", result.stderr)
+            self.assertIn("DRY_RUN command=", result.stdout)
+            submission = pd.read_csv(submission_log, sep="\t")
+            self.assertEqual(submission.loc[0, "job_id"], "DRY_RUN")
+
     def test_release_evidence_requires_complete_five_host_chain(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
