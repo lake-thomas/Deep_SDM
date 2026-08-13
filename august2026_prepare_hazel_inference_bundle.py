@@ -17,11 +17,17 @@ from august2026_summarize_experiments import read_json, sha256, write_json_atomi
 CODE_FILES = ["inference_multimodal_production.py", "model.py"]
 SUPPORT_FILES = [
     "august2026_inference_output_qa.py",
+    "august2026_prepare_mosaic_inputs.py",
+    "august2026_render_fixed_quickviews.py",
+    "august2026_validate_mosaics.py",
     "august2026_summarize_experiments.py",
     "build_archive_manifests.py",
     "make_tile_shards.py",
+    "mosaic_product.sbatch",
+    "quickviews_and_mosaic_qa.sbatch",
     "resolve_production_candidate.py",
     "submit_inference.sbatch",
+    "submit_release_mosaics.sh",
     "submit_shards.sh",
 ]
 

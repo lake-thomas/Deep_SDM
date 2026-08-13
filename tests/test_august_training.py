@@ -31,6 +31,7 @@ from august2026_cross_host_pathway_audit import correlation_metrics, residualize
 from august2026_final_model_acceptance import artifact_nonregression_gate
 from august2026_aligned_raster_correlation import aligned_raster_metrics
 from august2026_inference_output_qa import validate_triplet
+from august2026_prepare_mosaic_inputs import prepare_inputs
 from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_freeze_dataset_selection import freeze_selection
 from august2026_loss_screen import build_loss_config, loss_experiment_name
@@ -220,6 +221,31 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_mosaic_input_preparation_requires_exact_outputs_and_groups_zones(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            tiles = [
+                root / "m_4007501_ne_18_060_20210801.tif",
+                root / "m_4007601_ne_17_060_20210801.tif",
+            ]
+            for path in tiles:
+                path.write_bytes(b"input")
+            manifest = root / "tiles.txt"
+            manifest.write_text(
+                "\n".join(str(path) for path in tiles) + "\n", encoding="utf-8"
+            )
+            outputs = root / "outputs"
+            outputs.mkdir()
+            for path in tiles:
+                (outputs / f"{path.stem}_prediction.tif").write_bytes(b"output")
+            design = root / "mosaic_inputs"
+            payload = prepare_inputs(manifest, outputs, "prediction", design)
+            self.assertEqual(payload["expected_raster_count"], 2)
+            self.assertEqual(set(payload["zone_manifests"]), {"17", "18"})
+            self.assertEqual(
+                payload["zone_manifests"]["17"]["raster_count"], 1
+            )
+
     def test_inference_output_qa_requires_hann_tags_and_zero_deterministic_uncertainty(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
