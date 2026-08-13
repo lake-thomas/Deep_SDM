@@ -17,6 +17,7 @@ from calibration_utils import (
     derive_mcc_threshold,
     fit_platt_calibrator,
 )
+from august2026_experiments import filter_specs, stage_specs
 from datasets import BalancedBinaryBatchSampler
 from model import HostModelBase
 from transforms import RandomDihedral4Band, RandomRadiometricAugment4Band
@@ -185,6 +186,32 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
             )
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn("Refusing to reuse nonempty experiment directory", refused.stderr)
+
+
+class AugustExperimentDesignTests(unittest.TestCase):
+    def test_dataset_screen_is_the_approved_fourteen_run_matrix(self):
+        specs = stage_specs("dataset-screen")
+        self.assertEqual(len(specs), 14)
+        vitis = [spec for spec in specs if spec.host == "vitis_labrusca"]
+        tanoak = [
+            spec for spec in specs if spec.host == "notholithocarpus_densiflorus"
+        ]
+        self.assertEqual({spec.background_target for spec in vitis}, {6000, 10000, 15000, 20000})
+        self.assertEqual({spec.background_target for spec in tanoak}, {5000, 10000, 15000})
+        self.assertEqual({spec.arm for spec in specs}, {"random", "domain_balanced"})
+        self.assertTrue(all(spec.loss_strategy == "ordinary_bce" for spec in specs))
+        self.assertTrue(all(spec.spatial_augmentation == "dihedral" for spec in specs))
+
+    def test_filters_select_without_changing_the_frozen_specs(self):
+        specs = filter_specs(
+            stage_specs("dataset-screen"),
+            hosts=["vitis_labrusca"],
+            arms=["domain_balanced"],
+            targets=[10000],
+        )
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0].background_target, 10000)
+        self.assertIn("stage01_vitis_labrusca_db_bg10000", specs[0].name)
 
 
 if __name__ == "__main__":
