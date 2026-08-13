@@ -157,9 +157,13 @@ def synthesize_acceptance(
         raise ValueError("Production selection does not reference supplied BlockCV evidence")
 
     raw_artifacts = load_artifact_rows(raw_artifact_roots)
-    configured_artifacts = load_artifact_rows(configured_artifact_roots)
+    configured_artifacts = load_artifact_rows(
+        configured_artifact_roots, require_raw_score_space=False
+    )
     raw_exact = load_exact_overlap_rows(raw_exact_roots)
-    configured_exact = load_exact_overlap_rows(configured_exact_roots)
+    configured_exact = load_exact_overlap_rows(
+        configured_exact_roots, require_raw_score_space=False
+    )
     experiment_set = set(training["experiment"])
     for label, frame, expected_count in (
         ("raw artifact", raw_artifacts, 5),

@@ -67,7 +67,10 @@ def pareto_nondominated(frame: pd.DataFrame, objectives: dict[str, str]) -> np.n
     return nondominated
 
 
-def load_artifact_rows(artifact_roots: list[Path]) -> pd.DataFrame:
+def load_artifact_rows(
+    artifact_roots: list[Path],
+    require_raw_score_space: bool = True,
+) -> pd.DataFrame:
     rows = []
     for root in artifact_roots:
         status_path = root / "batch_status.json"
@@ -160,10 +163,23 @@ def load_artifact_rows(artifact_roots: list[Path]) -> pd.DataFrame:
     frame = pd.DataFrame(rows)
     if frame.empty or frame["experiment"].duplicated().any():
         raise ValueError("Artifact evidence must contain unique candidate experiments")
+    if require_raw_score_space:
+        invalid = frame[
+            (frame["artifact_score_space"] != "raw_sigmoid_probability")
+            | frame["artifact_platt_calibrator_sha256"].notna()
+        ]
+        if not invalid.empty:
+            raise ValueError(
+                "Screening artifact evidence must use raw sigmoid scores: "
+                f"{invalid['experiment'].tolist()}"
+            )
     return frame
 
 
-def load_exact_overlap_rows(exact_roots: list[Path]) -> pd.DataFrame:
+def load_exact_overlap_rows(
+    exact_roots: list[Path],
+    require_raw_score_space: bool = True,
+) -> pd.DataFrame:
     rows = []
     for root in exact_roots:
         status_path = root / "batch_status.json"
@@ -227,6 +243,16 @@ def load_exact_overlap_rows(exact_roots: list[Path]) -> pd.DataFrame:
     frame = pd.DataFrame(rows)
     if frame.empty or frame["experiment"].duplicated().any():
         raise ValueError("Exact-overlap evidence must contain unique candidate experiments")
+    if require_raw_score_space:
+        invalid = frame[
+            (frame["exact_overlap_score_space"] != "raw_sigmoid_probability")
+            | frame["exact_overlap_platt_calibrator_sha256"].notna()
+        ]
+        if not invalid.empty:
+            raise ValueError(
+                "Screening exact-overlap evidence must use raw sigmoid scores: "
+                f"{invalid['experiment'].tolist()}"
+            )
     return frame
 
 

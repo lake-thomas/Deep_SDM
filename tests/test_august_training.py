@@ -799,6 +799,8 @@ class AugustExperimentDesignTests(unittest.TestCase):
                     "candidate_experiment": experiment,
                     "checkpoint_sha256": f"checkpoint-{index}",
                     "dataset_sha256": f"dataset-{index}",
+                    "score_space": "raw_sigmoid_probability",
+                    "platt_calibrator_sha256": None,
                 }
                 comparison_summary = {
                     "status": "complete",
@@ -862,6 +864,8 @@ class AugustExperimentDesignTests(unittest.TestCase):
                             "absolute_shift_reduction_supported": True,
                             "checkpoint_sha256": f"checkpoint-{index}",
                             "dataset_sha256": f"dataset-{index}",
+                            "score_space": "raw_sigmoid_probability",
+                            "platt_calibrator_sha256": None,
                         }
                     ),
                     encoding="utf-8",
