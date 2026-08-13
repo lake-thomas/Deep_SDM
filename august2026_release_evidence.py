@@ -46,6 +46,7 @@ def assemble_release_evidence(
     final_acceptance_path: Path,
     production_registry_path: Path,
     hazel_bundle_metadata_path: Path,
+    candidate_provenance_paths: list[Path],
     attrition_paths: list[Path],
     inference_qa_paths: list[Path],
     mosaic_qa_paths: list[Path],
@@ -87,6 +88,19 @@ def assemble_release_evidence(
     ):
         failures.append("hazel_bundle_hann_defaults")
     _index(index_rows, "hazel_inference_bundle", hazel_bundle_metadata_path)
+
+    provenance_by_host = {}
+    for path in candidate_provenance_paths:
+        payload = read_json(path)
+        host = payload.get("host")
+        if host in provenance_by_host:
+            failures.append(f"duplicate_candidate_provenance:{host}")
+        provenance_by_host[host] = payload
+        if payload.get("status") != "complete" or not payload.get("production_ready"):
+            failures.append(f"candidate_provenance_not_ready:{host}")
+        _index(index_rows, "candidate_builder_provenance", path, host=host)
+    if set(provenance_by_host) != HOSTS:
+        failures.append("candidate_provenance_host_set")
 
     attrition_by_host = {}
     for path in attrition_paths:
@@ -246,6 +260,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--final-acceptance", type=Path, required=True)
     parser.add_argument("--production-registry", type=Path, required=True)
     parser.add_argument("--hazel-bundle-metadata", type=Path, required=True)
+    parser.add_argument("--candidate-provenance-summary", type=Path, action="append", required=True)
     parser.add_argument("--attrition-summary", type=Path, action="append", required=True)
     parser.add_argument("--inference-qa-summary", type=Path, action="append", required=True)
     parser.add_argument("--mosaic-qa-summary", type=Path, action="append", required=True)
@@ -261,14 +276,16 @@ def main() -> None:
     required = [
         args.final_acceptance, args.production_registry, args.hazel_bundle_metadata,
         args.visual_review, args.aligned_correlation, args.hann_results,
-        *args.attrition_summary, *args.inference_qa_summary, *args.mosaic_qa_summary,
+        *args.candidate_provenance_summary, *args.attrition_summary,
+        *args.inference_qa_summary, *args.mosaic_qa_summary,
     ]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"Missing release evidence inputs: {missing}")
     payload = assemble_release_evidence(
         args.final_acceptance, args.production_registry, args.hazel_bundle_metadata,
-        args.attrition_summary, args.inference_qa_summary, args.mosaic_qa_summary,
+        args.candidate_provenance_summary, args.attrition_summary,
+        args.inference_qa_summary, args.mosaic_qa_summary,
         args.visual_review, args.aligned_correlation, args.hann_results,
         args.output_dir,
     )

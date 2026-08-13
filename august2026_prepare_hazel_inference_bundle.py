@@ -16,6 +16,7 @@ from august2026_summarize_experiments import read_json, sha256, write_json_atomi
 
 CODE_FILES = ["inference_multimodal_production.py", "model.py"]
 SUPPORT_FILES = [
+    "august2026_candidate_builder_provenance_audit.py",
     "august2026_inference_output_qa.py",
     "august2026_prepare_mosaic_inputs.py",
     "august2026_render_fixed_quickviews.py",

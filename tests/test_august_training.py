@@ -30,6 +30,7 @@ from august2026_dataset_overlap_audit import build_overlap_audit, prepare_datase
 from august2026_cross_host_pathway_audit import correlation_metrics, residualize
 from august2026_final_model_acceptance import artifact_nonregression_gate
 from august2026_aligned_raster_correlation import aligned_raster_metrics
+from august2026_candidate_builder_provenance_audit import commit_matches
 from august2026_inference_output_qa import validate_triplet
 from august2026_prepare_mosaic_inputs import prepare_inputs
 from august2026_calibrate_radiometric_augmentation import derive_recipe
@@ -221,6 +222,19 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_current_builder_snapshot_is_recoverable_from_head(self):
+        code_root = Path(__file__).resolve().parents[1]
+        names = ["candidate_manifests.py", "background.py", "naip.py"]
+        expected = {
+            name: sha256(code_root / "host_dataset_builder" / name)
+            for name in names
+        }
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=code_root, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertTrue(commit_matches(code_root, head, expected, names))
+
     def test_mosaic_input_preparation_requires_exact_outputs_and_groups_zones(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

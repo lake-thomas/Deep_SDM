@@ -207,9 +207,13 @@ def validate_source_gate(spec: ExperimentSpec) -> dict:
     attrition_audit = (
         dataset_root / "qa" / "materialization_attrition_audit" / "summary.json"
     )
+    provenance_audit = (
+        dataset_root / "qa" / "candidate_builder_provenance" / "summary.json"
+    )
     required = [
         materialization_state,
         attrition_audit,
+        provenance_audit,
         manifest,
         lat_lon_stats,
         manifest_qa,
@@ -227,6 +231,9 @@ def validate_source_gate(spec: ExperimentSpec) -> dict:
     attrition = read_json(attrition_audit)
     if attrition.get("status") != "complete" or not attrition.get("production_ready"):
         raise RuntimeError(f"Materialization attrition audit did not pass: {attrition_audit}")
+    provenance = read_json(provenance_audit)
+    if provenance.get("status") != "complete" or not provenance.get("production_ready"):
+        raise RuntimeError(f"Candidate/materializer provenance did not pass: {provenance_audit}")
     qa = read_json(manifest_qa)
     if not qa.get("production_ready"):
         raise RuntimeError(f"Specific model manifest did not pass QA: {manifest_qa}")
@@ -236,6 +243,8 @@ def validate_source_gate(spec: ExperimentSpec) -> dict:
         "materialization_identity": materialization.get("identity"),
         "materialization_attrition_audit": str(attrition_audit),
         "materialization_attrition_audit_sha256": sha256(attrition_audit),
+        "candidate_builder_provenance": str(provenance_audit),
+        "candidate_builder_provenance_sha256": sha256(provenance_audit),
         "manifest": str(manifest),
         "manifest_sha256": sha256(manifest),
         "manifest_qa": str(manifest_qa),

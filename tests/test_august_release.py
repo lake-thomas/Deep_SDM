@@ -186,12 +186,16 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             )
 
             attrition = []
+            provenance = []
             inference = []
             mosaics = []
             mosaic_payloads = {}
             visual_reviews = []
             for host in hosts:
                 region = "west" if host == "notholithocarpus_densiflorus" else "east"
+                path = root / "provenance" / host / "summary.json"
+                write_json(path, {"status": "complete", "production_ready": True, "host": host})
+                provenance.append(path)
                 path = root / "attrition" / host / "summary.json"
                 write_json(path, {"status": "complete", "production_ready": True, "host": host})
                 attrition.append(path)
@@ -250,7 +254,7 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             hann = root / "HANN_RESULTS.md"
             hann.write_text("validated Hann results\n", encoding="utf-8")
             result = assemble_release_evidence(
-                acceptance, registry, bundle, attrition, inference, mosaics,
+                acceptance, registry, bundle, provenance, attrition, inference, mosaics,
                 visual, correlation, hann, root / "release",
             )
             self.assertTrue(result["production_ready_for_collaborator_review"])

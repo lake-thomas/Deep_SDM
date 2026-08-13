@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -309,6 +311,18 @@ def main() -> None:
     if output_dir.exists():
         raise FileExistsError(f"Refusing to reuse attrition-audit output: {output_dir}")
     summary = audit_host(args.host, output_dir)
+    provenance_output = output_dir.parent / "candidate_builder_provenance"
+    subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "august2026_candidate_builder_provenance_audit.py"),
+            "--host", args.host,
+            "--candidate-root", str(CANDIDATE_ROOT),
+            "--materialized-root", str(MATERIALIZED_ROOT),
+            "--output-dir", str(provenance_output),
+        ],
+        check=True,
+    )
     print(json.dumps(summary, indent=2))
 
 
