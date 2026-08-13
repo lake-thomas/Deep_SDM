@@ -200,13 +200,47 @@ class HostModelBase(nn.Module):
 
     model_type_key = "base"
 
+    def __init__(self):
+        super().__init__()
+        self.register_buffer(
+            "_training_pos_weight",
+            torch.tensor(float("nan"), dtype=torch.float32),
+            persistent=False,
+        )
+        self._training_label_smoothing = 0.0
+
+    def configure_training_loss(
+        self,
+        pos_weight: float | None = None,
+        label_smoothing: float = 0.0,
+    ) -> None:
+        """Configure training-only weighting/smoothing.
+
+        Validation always uses ordinary BCE against unsmoothed labels so model
+        selection remains comparable across August loss arms.
+        """
+        if pos_weight is not None and (not torch.isfinite(torch.tensor(pos_weight)) or pos_weight <= 0):
+            raise ValueError("pos_weight must be finite and positive")
+        if not 0 <= label_smoothing < 1:
+            raise ValueError("label_smoothing must be in [0, 1)")
+        value = float("nan") if pos_weight is None else float(pos_weight)
+        self._training_pos_weight.fill_(value)
+        self._training_label_smoothing = float(label_smoothing)
+
     def forward_from_batch(self, batch):
         raise NotImplementedError
 
     def training_step(self, batch):
         labels = batch["label"].to(next(self.parameters()).device)
         out = self.forward_from_batch(batch)
-        return F.binary_cross_entropy_with_logits(out, labels)
+        smoothing = self._training_label_smoothing
+        targets = labels * (1.0 - smoothing) + 0.5 * smoothing
+        pos_weight = (
+            self._training_pos_weight
+            if torch.isfinite(self._training_pos_weight)
+            else None
+        )
+        return F.binary_cross_entropy_with_logits(out, targets, pos_weight=pos_weight)
 
     def validation_step(self, batch):
         labels = batch["label"].to(next(self.parameters()).device)

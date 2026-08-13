@@ -49,7 +49,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 
 WC_VARS = [f"wc2.1_30s_bio_{i}" for i in range(1, 20)]
@@ -148,6 +148,55 @@ MODEL_INPUTS = {
     "image_topo": {"image": True, "topo": True, "env": False},
     "image_topo_tabular": {"image": True, "topo": True, "env": True},
 }
+
+
+class BalancedBinaryBatchSampler(Sampler[list[int]]):
+    """Yield deterministic, approximately half-positive binary batches.
+
+    Minority-class indices are cycled with reshuffling as needed. This changes
+    the optimization prior but leaves validation/test distributions untouched.
+    """
+
+    def __init__(self, labels, batch_size: int, seed: int = 42):
+        labels = np.asarray(labels, dtype=int)
+        if batch_size < 2:
+            raise ValueError("Balanced binary batches require batch_size >= 2")
+        if not np.isin(labels, [0, 1]).all():
+            raise ValueError("BalancedBinaryBatchSampler labels must be binary")
+        self.negative = np.flatnonzero(labels == 0)
+        self.positive = np.flatnonzero(labels == 1)
+        if len(self.negative) == 0 or len(self.positive) == 0:
+            raise ValueError("Balanced binary batches require both classes")
+        self.batch_size = int(batch_size)
+        self.seed = int(seed)
+        self.epoch = 0
+        self.num_batches = int(np.ceil(len(labels) / batch_size))
+
+    def __len__(self) -> int:
+        return self.num_batches
+
+    @staticmethod
+    def _take(indices: np.ndarray, count: int, rng: np.random.Generator) -> np.ndarray:
+        parts = []
+        remaining = count
+        while remaining > 0:
+            shuffled = rng.permutation(indices)
+            take = min(remaining, len(shuffled))
+            parts.append(shuffled[:take])
+            remaining -= take
+        return np.concatenate(parts)
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed + self.epoch)
+        self.epoch += 1
+        positive_count = self.batch_size // 2
+        negative_count = self.batch_size - positive_count
+        for _ in range(self.num_batches):
+            positive = self._take(self.positive, positive_count, rng)
+            negative = self._take(self.negative, negative_count, rng)
+            batch = np.concatenate([positive, negative])
+            rng.shuffle(batch)
+            yield batch.tolist()
 
 
 def normalize_model_type(model_type: str) -> str:

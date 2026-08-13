@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -38,6 +39,35 @@ def save_checkpoint(model, epoch, optimizer, path="checkpoints"):
         checkpoint_path,
     )
     print(f"Checkpoint saved to {checkpoint_path}")
+
+
+def save_best_checkpoint(
+    model,
+    epoch: int,
+    optimizer,
+    val_loss: float,
+    path: str,
+    metadata: dict | None = None,
+) -> str:
+    """Atomically replace the single checkpoint used for downstream evaluation."""
+    checkpoint_dir = Path(path)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    destination = checkpoint_dir / "best.pt"
+    partial = checkpoint_dir / "best.pt.partial"
+    torch.save(
+        {
+            "model_type": model.__class__.__name__,
+            "model_type_key": getattr(model, "model_type_key", model.__class__.__name__),
+            "epoch": int(epoch),
+            "val_loss_unsmoothed_unweighted": float(val_loss),
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "metadata": metadata or {},
+        },
+        partial,
+    )
+    os.replace(partial, destination)
+    return str(destination)
 
 
 def load_model_from_checkpoint(
@@ -105,6 +135,9 @@ def fit(
     es_patience=10,
     use_fp16=True,
     log_wandb=True,
+    restore_best_model=False,
+    checkpoint_metadata=None,
+    save_epoch_checkpoints=False,
 ):
     """
     Train a model with ReduceLROnPlateau scheduling and early stopping.
@@ -165,12 +198,36 @@ def fit(
         if result["val_loss"] < best_val_loss:
             best_val_loss = result["val_loss"]
             early_stop_counter = 0
-            save_checkpoint(model, epoch, optimizer, path=outpath)
+            if save_epoch_checkpoints:
+                save_checkpoint(model, epoch, optimizer, path=outpath)
+            save_best_checkpoint(
+                model,
+                epoch=epoch,
+                optimizer=optimizer,
+                val_loss=result["val_loss"],
+                path=outpath,
+                metadata=checkpoint_metadata,
+            )
+            result["is_best"] = True
         else:
+            result["is_best"] = False
             early_stop_counter += 1
             if early_stop_counter >= es_patience:
                 print(f"Early stopping at epoch {epoch}.")
-                save_checkpoint(model, epoch, optimizer, path=outpath)
+                if save_epoch_checkpoints:
+                    save_checkpoint(model, epoch, optimizer, path=outpath)
                 break
+
+    if restore_best_model:
+        best_path = Path(outpath) / "best.pt"
+        if not best_path.is_file():
+            raise RuntimeError(f"Best checkpoint was not written: {best_path}")
+        checkpoint = torch.load(best_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.eval()
+        print(
+            "Restored best model from unsmoothed/unweighted validation BCE: "
+            f"epoch={checkpoint['epoch']}, val_loss={checkpoint['val_loss_unsmoothed_unweighted']:.6f}"
+        )
 
     return history
