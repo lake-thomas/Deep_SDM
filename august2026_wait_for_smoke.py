@@ -10,6 +10,12 @@ import subprocess
 import time
 from pathlib import Path
 
+from august2026_watch_io import (
+    count_lines_retry,
+    read_json_retry,
+    write_json_atomic_retry,
+)
+
 
 PYTHON = Path("/home/ncsucnr/miniforge3/envs/host-naip-sdm/bin/python")
 CODE_ROOT = Path(__file__).resolve().parent
@@ -31,18 +37,11 @@ def now() -> str:
 
 
 def write_status(payload: dict) -> None:
-    partial = STATUS.with_name(f"{STATUS.name}.partial")
-    with partial.open("w", encoding="utf-8") as stream:
-        json.dump(payload, stream, indent=2)
-        stream.write("\n")
-    os.replace(partial, STATUS)
+    write_json_atomic_retry(STATUS, payload)
 
 
 def progress_lines() -> int:
-    if not PROGRESS.is_file():
-        return 0
-    with PROGRESS.open("rb") as stream:
-        return sum(1 for _ in stream)
+    return count_lines_retry(PROGRESS)
 
 
 def main() -> None:
@@ -62,7 +61,7 @@ def main() -> None:
             raise TimeoutError(f"Vitis materialization did not complete in {TIMEOUT_HOURS} hours")
 
         if MATERIALIZATION_STATE.is_file():
-            state = json.loads(MATERIALIZATION_STATE.read_text(encoding="utf-8"))
+            state = read_json_retry(MATERIALIZATION_STATE)
             if state.get("status") == "complete":
                 if not state.get("manifest_status", {}).get("production_ready_manifests"):
                     raise RuntimeError("Vitis materialization completed without production-ready manifests")
@@ -91,7 +90,7 @@ def main() -> None:
     )
     audit_ready = False
     if ATTRITION_AUDIT_SUMMARY.is_file():
-        audit = json.loads(ATTRITION_AUDIT_SUMMARY.read_text(encoding="utf-8"))
+        audit = read_json_retry(ATTRITION_AUDIT_SUMMARY)
         audit_ready = bool(
             audit.get("status") == "complete" and audit.get("production_ready")
         )

@@ -10,6 +10,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from august2026_watch_io import read_json_retry, write_json_atomic_retry
+
 
 PYTHON = Path("/home/ncsucnr/miniforge3/envs/host-naip-sdm/bin/python")
 CODE_ROOT = Path(__file__).resolve().parent
@@ -47,16 +49,11 @@ def now() -> str:
 
 
 def read_json(path: Path) -> dict:
-    with path.open("r", encoding="utf-8") as stream:
-        return json.load(stream)
+    return read_json_retry(path)
 
 
 def write_status(payload: dict) -> None:
-    partial = STATUS.with_name(f"{STATUS.name}.partial")
-    with partial.open("w", encoding="utf-8") as stream:
-        json.dump(payload, stream, indent=2)
-        stream.write("\n")
-    os.replace(partial, STATUS)
+    write_json_atomic_retry(STATUS, payload)
 
 
 def attrition_ready(host: str) -> bool:
