@@ -18,6 +18,10 @@ from calibration_utils import (
     fit_platt_calibrator,
 )
 from august2026_experiments import filter_specs, stage_specs
+from august2026_compare_artifact_probe import (
+    exact_pair_merge,
+    paired_comparison,
+)
 from august2026_fixed_env_artifact_probe import pair_metrics
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -273,6 +277,50 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertAlmostEqual(result["fixed_env_control_absdiff"], 0.1)
         self.assertAlmostEqual(result["fixed_env_prediction_did"], 0.5)
         self.assertAlmostEqual(result["embedding_distance_did"], 1.0)
+
+    def test_artifact_comparison_is_exactly_paired_and_reports_reduction(self):
+        baseline = pd.DataFrame(
+            {
+                "pair_id": [1, 2, 3],
+                "date_pair": ["a|b", "a|b", "c|d"],
+                "baseline_did": [0.10, 0.20, 0.30],
+            }
+        )
+        candidate = pd.DataFrame(
+            {
+                "pair_id": [3, 1, 2],
+                "date_pair": ["c|d", "a|b", "a|b"],
+                "fixed_env_prediction_did": [0.15, 0.05, 0.10],
+            }
+        )
+        merged = exact_pair_merge(baseline, candidate)
+        result = paired_comparison(merged, seed=4)
+        self.assertEqual(result["pair_count"], 3)
+        self.assertAlmostEqual(result["baseline_signed_did_mean"], 0.2)
+        self.assertAlmostEqual(result["candidate_signed_did_mean"], 0.1)
+        self.assertAlmostEqual(result["relative_signed_did_reduction"], 0.5)
+        self.assertEqual(
+            result["comparison_status"],
+            "statistically_supported_signed_reduction",
+        )
+
+    def test_artifact_comparison_rejects_partial_pair_replay(self):
+        baseline = pd.DataFrame(
+            {
+                "pair_id": [1, 2],
+                "date_pair": ["a|b", "a|b"],
+                "baseline_did": [0.1, 0.2],
+            }
+        )
+        partial = pd.DataFrame(
+            {
+                "pair_id": [1],
+                "date_pair": ["a|b"],
+                "fixed_env_prediction_did": [0.05],
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "exact frozen pair set"):
+            exact_pair_merge(baseline, partial)
 
 
 if __name__ == "__main__":

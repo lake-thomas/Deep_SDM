@@ -357,6 +357,7 @@ def main() -> None:
     model, env_vars, mean_environment = load_candidate(
         args.checkpoint, args.config, args.dataset, device
     )
+    candidate_config = inference.load_json(args.config) or {}
     features, probabilities = embed_and_predict(
         model, chips, mean_environment, device, args.batch_size
     )
@@ -383,6 +384,10 @@ def main() -> None:
         "checkpoint_sha256": sha256(args.checkpoint),
         "config": str(args.config.resolve()),
         "config_sha256": sha256(args.config),
+        "candidate_experiment": candidate_config.get("experiment"),
+        "candidate_august_experiment_spec": candidate_config.get(
+            "august_experiment_spec"
+        ),
         "dataset": str(args.dataset.resolve()),
         "dataset_sha256": sha256(args.dataset),
         "pairs": str(pairs_path.resolve()),
