@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Generate and run gated August 2026 Host SDM screening experiments.
 
-This launcher is intentionally limited to the first two approved stages:
+This launcher is intentionally limited to the approved dataset-screen stages:
 
 * ``smoke``: one two-epoch Vitis execution-path check.
 * ``dataset-screen``: the nested random versus domain-balanced background-count
   screen for Vitis and Tanoak on frozen uniform manifests.
+* ``control-dataset-screen``: the equal-depth random versus domain-balanced
+  screen for Ailanthus, Juglans, and Prunus after their separately gated builds.
 
 It refuses to generate configs until the source-locked materialization and the
 specific model manifest both pass their hard QA gates. Runs are sequential on
@@ -57,6 +59,12 @@ HOST_TARGETS = {
     "vitis_labrusca": [6000, 10000, 15000, 20000],
     "notholithocarpus_densiflorus": [5000, 10000, 15000],
 }
+CONTROL_HOST_TARGETS = {
+    "ailanthus_altissima": [20000],
+    "juglans_nigra": [20000],
+    "prunus_serotina": [20000],
+}
+ALL_HOST_TARGETS = {**HOST_TARGETS, **CONTROL_HOST_TARGETS}
 ARMS = ["random", "domain_balanced"]
 
 
@@ -77,7 +85,11 @@ class ExperimentSpec:
 
     @property
     def name(self) -> str:
-        stage_label = "stage00" if self.stage == "smoke" else "stage01"
+        stage_label = {
+            "smoke": "stage00",
+            "dataset-screen": "stage01",
+            "control-dataset-screen": "stage01c",
+        }[self.stage]
         arm_label = "db" if self.arm == "domain_balanced" else "rnd"
         return (
             f"{stage_label}_{self.host}_{arm_label}_bg{self.background_target:05d}_"
@@ -138,6 +150,19 @@ def stage_specs(stage: str) -> list[ExperimentSpec]:
                 epochs=15,
             )
             for host, targets in HOST_TARGETS.items()
+            for target in targets
+            for arm in ARMS
+        ]
+    if stage == "control-dataset-screen":
+        return [
+            ExperimentSpec(
+                stage=stage,
+                host=host,
+                arm=arm,
+                background_target=target,
+                epochs=15,
+            )
+            for host, targets in CONTROL_HOST_TARGETS.items()
             for target in targets
             for arm in ARMS
         ]
@@ -286,7 +311,11 @@ def write_design(stage: str, specs: list[ExperimentSpec]) -> tuple[Path, list[di
     )
     if git_dirty:
         raise RuntimeError("Refusing to freeze an experiment design from a dirty code tree")
-    stage_label = "stage00_smoke" if stage == "smoke" else "stage01_dataset_screen"
+    stage_label = {
+        "smoke": "stage00_smoke",
+        "dataset-screen": "stage01_dataset_screen",
+        "control-dataset-screen": "stage01_control_dataset_screen",
+    }[stage]
     stage_root = OUTPUT_BASE / f"{stage_label}_{DATE_TAG}"
     design_root = DESIGN_BASE / f"{stage_label}_{DATE_TAG}"
     config_root = design_root / "configs"
@@ -378,8 +407,12 @@ def run_experiments(registry: Path, rows: list[dict], max_runs: int | None) -> N
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=["smoke", "dataset-screen"], required=True)
-    parser.add_argument("--host", action="append", choices=sorted(HOST_TARGETS))
+    parser.add_argument(
+        "--stage",
+        choices=["smoke", "dataset-screen", "control-dataset-screen"],
+        required=True,
+    )
+    parser.add_argument("--host", action="append", choices=sorted(ALL_HOST_TARGETS))
     parser.add_argument("--arm", action="append", choices=ARMS)
     parser.add_argument("--target", action="append", type=int)
     parser.add_argument("--run", action="store_true", help="Run sequentially after writing configs")

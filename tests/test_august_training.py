@@ -210,6 +210,17 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertTrue(all(spec.loss_strategy == "ordinary_bce" for spec in specs))
         self.assertTrue(all(spec.spatial_augmentation == "dihedral" for spec in specs))
 
+    def test_control_dataset_screen_is_the_approved_six_run_matrix(self):
+        specs = stage_specs("control-dataset-screen")
+        self.assertEqual(len(specs), 6)
+        self.assertEqual(
+            {spec.host for spec in specs},
+            {"ailanthus_altissima", "juglans_nigra", "prunus_serotina"},
+        )
+        self.assertEqual({spec.background_target for spec in specs}, {20000})
+        self.assertEqual({spec.arm for spec in specs}, {"random", "domain_balanced"})
+        self.assertTrue(all(spec.name.startswith("stage01c_") for spec in specs))
+
     def test_filters_select_without_changing_the_frozen_specs(self):
         specs = filter_specs(
             stage_specs("dataset-screen"),

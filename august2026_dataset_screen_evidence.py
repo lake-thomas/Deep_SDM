@@ -237,8 +237,13 @@ def synthesize(
             ["experiment", "evidence_gate_failures"],
         ].to_dict("records")
         raise RuntimeError(f"Training evidence is incomplete: {failed}")
-    if set(training["stage"]) != {"dataset-screen"}:
-        raise ValueError("Evidence synthesis requires the frozen dataset-screen stage")
+    stages = set(training["stage"])
+    allowed_stages = {"dataset-screen", "control-dataset-screen"}
+    if len(stages) != 1 or not stages.issubset(allowed_stages):
+        raise ValueError(
+            "Evidence synthesis requires one frozen dataset-screen stage, found "
+            f"{sorted(stages)}"
+        )
 
     artifacts = load_artifact_rows(artifact_roots)
     training_experiments = set(training["experiment"])

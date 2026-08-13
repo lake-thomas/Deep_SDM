@@ -38,6 +38,9 @@ from august2026_summarize_experiments import read_json, summarize_row
 
 
 HOST_DIAGNOSTIC = {
+    "ailanthus_altissima": "ny",
+    "juglans_nigra": "ny",
+    "prunus_serotina": "ny",
     "vitis_labrusca": "ny",
     "notholithocarpus_densiflorus": "tanoak",
 }
