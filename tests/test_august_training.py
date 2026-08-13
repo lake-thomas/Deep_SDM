@@ -24,6 +24,7 @@ from august2026_compare_artifact_probe import (
 )
 from august2026_batch_artifact_probe import reusable_completed_probe
 from august2026_dataset_screen_evidence import pareto_nondominated, synthesize
+from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -480,6 +481,21 @@ class AugustExperimentDesignTests(unittest.TestCase):
             self.assertTrue(
                 (root / "synthesis" / "combined_candidate_evidence.csv").is_file()
             )
+
+    def test_radiometric_recipe_uses_conservative_empirical_caps(self):
+        metrics = {
+            "quantiles": {
+                "absolute_scene_gain_change": {"q50": 0.12},
+                "absolute_contrast_ratio_change": {"q50": 0.06},
+                "absolute_band_gain_residual_change": {"q25": 0.03},
+                "absolute_mean_ndvi_change": {"q90": 0.05},
+            }
+        }
+        recipe = derive_recipe(metrics)
+        self.assertEqual(recipe["scene_gain"], 0.08)
+        self.assertEqual(recipe["contrast"], 0.06)
+        self.assertEqual(recipe["band_gain"], 0.02)
+        self.assertEqual(recipe["max_mean_ndvi_shift"], 0.05)
 
 
 if __name__ == "__main__":
