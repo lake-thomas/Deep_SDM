@@ -26,6 +26,7 @@ from august2026_compare_artifact_probe import (
 from august2026_batch_artifact_probe import reusable_completed_probe
 from august2026_dataset_screen_evidence import pareto_nondominated, synthesize
 from august2026_dataset_overlap_audit import build_overlap_audit, prepare_dataset
+from august2026_cross_host_pathway_audit import correlation_metrics, residualize
 from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_freeze_dataset_selection import freeze_selection
 from august2026_loss_screen import build_loss_config, loss_experiment_name
@@ -215,6 +216,16 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_cross_host_pathway_residual_removes_environment_signal(self):
+        environment = np.linspace(-2.0, 2.0, 100)
+        outcome = 0.25 + 0.5 * environment
+        residual = residualize(outcome, environment)
+        self.assertLess(float(np.abs(residual).max()), 1e-12)
+        correlated = correlation_metrics(environment, environment * 3.0 + 2.0)
+        self.assertEqual(correlated["n"], 100)
+        self.assertAlmostEqual(correlated["pearson"], 1.0)
+        self.assertAlmostEqual(correlated["spearman"], 1.0)
+
     def test_cross_host_dataset_overlap_is_class_specific(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
