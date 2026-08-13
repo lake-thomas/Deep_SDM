@@ -27,6 +27,7 @@ from august2026_dataset_screen_evidence import pareto_nondominated, synthesize
 from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_freeze_dataset_selection import freeze_selection
 from august2026_loss_screen import build_loss_config, loss_experiment_name
+from august2026_exact_overlap_probe import compare_exact_overlap
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -598,6 +599,31 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertEqual(config["label_smoothing"], 0.0)
         self.assertFalse(config["radiometric_augmentation"])
         self.assertIn("posw", loss_experiment_name(selection, "pos_weight_bce"))
+
+    def test_exact_overlap_comparison_uses_paired_absolute_shift_reduction(self):
+        baseline = pd.DataFrame(
+            {
+                "chip_id": [0, 1, 2],
+                "x": [1.0, 2.0, 3.0],
+                "y": [4.0, 5.0, 6.0],
+                "pa_minus_ny_probability": [-0.5, -0.3, -0.1],
+            }
+        )
+        candidate = pd.DataFrame(
+            {
+                "chip_id": [2, 0, 1],
+                "x": [3.0, 1.0, 2.0],
+                "y": [6.0, 4.0, 5.0],
+                "pa_minus_ny_probability": [-0.05, -0.2, -0.2],
+            }
+        )
+        paired, summary = compare_exact_overlap(baseline, candidate)
+        self.assertEqual(len(paired), 3)
+        self.assertAlmostEqual(
+            summary["paired_absolute_probability_shift_reduction_mean"],
+            0.15,
+        )
+        self.assertTrue(summary["absolute_shift_reduction_supported"])
 
 
 if __name__ == "__main__":
