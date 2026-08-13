@@ -41,7 +41,10 @@ from august2026_exact_overlap_probe import (
     reusable_output as reusable_exact_overlap_output,
 )
 import august2026_materialization_attrition_audit as attrition_audit
-from august2026_materialization_attrition_audit import distribution_shift
+from august2026_materialization_attrition_audit import (
+    canonicalize_progress_attempts,
+    distribution_shift,
+)
 from august2026_wait_for_dataset_screen import smoke_evidence_ready
 from august2026_wait_for_control_screen import control_gates_ready
 from august2026_loss_screen_evidence import strict_evidence_gate
@@ -1058,6 +1061,24 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertAlmostEqual(total_variation, 0.25)
         self.assertAlmostEqual(maximum_shift, 0.25)
 
+    def test_materialization_retry_log_collapses_to_verified_final_state(self):
+        attempts = pd.DataFrame(
+            [
+                {"sample_id": "a", "materialization_status": "failed", "failure_type": "edge"},
+                {"sample_id": "b", "materialization_status": "success", "failure_type": None},
+                {"sample_id": "a", "materialization_status": "success", "failure_type": None},
+                {"sample_id": "c", "materialization_status": "failed", "failure_type": "edge"},
+                {"sample_id": "c", "materialization_status": "failed", "failure_type": "edge"},
+            ]
+        )
+        canonical = attempts.iloc[[1, 2, 4]].sort_values("sample_id").reset_index(drop=True)
+        final, retry, failures = canonicalize_progress_attempts(attempts, canonical)
+        self.assertFalse(failures)
+        self.assertEqual(len(final), 3)
+        self.assertEqual(retry["retried_sample_ids"], 2)
+        self.assertEqual(retry["failed_then_succeeded_sample_ids"], 1)
+        self.assertEqual(retry["repeated_terminal_failures"], 1)
+
     def test_materialization_attrition_audit_passes_exact_synthetic_build(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1116,6 +1137,7 @@ class AugustExperimentDesignTests(unittest.TestCase):
                 orient="records",
                 lines=True,
             )
+            progress.to_csv(dataset / "materialization_records.csv", index=False)
             (dataset / "materialization_run.json").write_text(
                 json.dumps(
                     {

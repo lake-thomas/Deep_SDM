@@ -57,14 +57,79 @@ def distribution_shift(
     return float(0.5 * absolute.sum()), float(absolute.max()) if len(absolute) else 0.0
 
 
+def canonicalize_progress_attempts(
+    progress: pd.DataFrame,
+    canonical_records: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict, list[str]]:
+    """Validate the append-only retry log against the unique final-state table."""
+    failures = []
+    if "sample_id" not in progress or "sample_id" not in canonical_records:
+        raise ValueError("Materialization progress tables require sample_id")
+    attempts = progress.copy()
+    attempts["_attempt_order"] = np.arange(len(attempts))
+    attempt_counts = attempts["sample_id"].value_counts()
+    duplicate_ids = attempt_counts[attempt_counts > 1]
+    success_counts = (
+        attempts["materialization_status"].eq("success").groupby(attempts["sample_id"]).sum()
+    )
+    if (success_counts > 1).any():
+        failures.append("multiple_success_attempts_for_sample")
+    final_attempts = (
+        attempts.sort_values("_attempt_order", kind="mergesort")
+        .drop_duplicates("sample_id", keep="last")
+        .drop(columns="_attempt_order")
+        .sort_values("sample_id", kind="mergesort")
+        .reset_index(drop=True)
+    )
+    canonical = (
+        canonical_records.sort_values("sample_id", kind="mergesort")
+        .reset_index(drop=True)
+    )
+    if canonical["sample_id"].duplicated().any():
+        failures.append("canonical_record_sample_ids_not_unique")
+    if set(final_attempts["sample_id"]) != set(canonical["sample_id"]):
+        failures.append("canonical_record_sample_set_mismatch")
+    else:
+        shared_columns = sorted(set(final_attempts.columns) & set(canonical.columns))
+        try:
+            pd.testing.assert_frame_equal(
+                final_attempts[shared_columns],
+                canonical[shared_columns],
+                check_dtype=False,
+                check_exact=False,
+                rtol=1e-10,
+                atol=1e-12,
+            )
+        except AssertionError:
+            failures.append("canonical_records_differ_from_final_attempts")
+    histories = attempts.groupby("sample_id")["materialization_status"].agg(list)
+    retry_summary = {
+        "attempt_rows": len(attempts),
+        "canonical_rows": len(canonical),
+        "retried_sample_ids": int(len(duplicate_ids)),
+        "extra_attempt_rows": int((attempt_counts - 1).clip(lower=0).sum()),
+        "maximum_attempts_per_sample": int(attempt_counts.max()) if len(attempt_counts) else 0,
+        "failed_then_succeeded_sample_ids": int(
+            sum("failed" in states[:-1] and states[-1] == "success" for states in histories)
+        ),
+        "repeated_terminal_failures": int(
+            sum(len(states) > 1 and states[-1] == "failed" for states in histories)
+        ),
+    }
+    return canonical, retry_summary, failures
+
+
 def audit_host(host: str, output_dir: Path) -> dict:
     candidate_root = CANDIDATE_ROOT / host
     materialized_root = MATERIALIZED_ROOT / host
     candidates_path = candidate_root / "extraction_candidates.csv"
     metadata_path = candidate_root / "manifest_metadata.json"
     progress_path = materialized_root / "materialization_progress.jsonl"
+    canonical_records_path = materialized_root / "materialization_records.csv"
     state_path = materialized_root / "materialization_run.json"
-    required = [candidates_path, metadata_path, progress_path, state_path]
+    required = [
+        candidates_path, metadata_path, progress_path, canonical_records_path, state_path
+    ]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"Materialization attrition inputs are missing: {missing}")
@@ -75,12 +140,15 @@ def audit_host(host: str, output_dir: Path) -> dict:
         raise RuntimeError(f"Materialization is not production-ready: {state_path}")
     metadata = read_json(metadata_path)
     candidates = pd.read_csv(candidates_path, low_memory=False)
-    progress = pd.read_json(progress_path, lines=True)
+    attempt_progress = pd.read_json(progress_path, lines=True)
+    canonical_records = pd.read_csv(canonical_records_path, low_memory=False)
     hard_failures = []
     if candidates["sample_id"].duplicated().any():
         hard_failures.append("candidate_sample_ids_not_unique")
-    if progress["sample_id"].duplicated().any():
-        hard_failures.append("progress_sample_ids_not_unique")
+    progress, retry_summary, progress_failures = canonicalize_progress_attempts(
+        attempt_progress, canonical_records
+    )
+    hard_failures.extend(progress_failures)
     candidate_ids = set(candidates["sample_id"])
     progress_ids = set(progress["sample_id"])
     if candidate_ids != progress_ids:
@@ -250,6 +318,8 @@ def audit_host(host: str, output_dir: Path) -> dict:
         "production_ready": not hard_failures,
         "candidate_rows": len(candidates),
         "progress_rows": len(progress),
+        "progress_attempt_rows": len(attempt_progress),
+        "retry_summary": retry_summary,
         "success_rows": int(merged["materialization_success"].sum()),
         "failed_rows": int((~merged["materialization_success"]).sum()),
         "overall_failure_fraction": overall_failure_fraction,
@@ -270,6 +340,8 @@ def audit_host(host: str, output_dir: Path) -> dict:
             "candidate_metadata_sha256": sha256(metadata_path),
             "progress_jsonl": str(progress_path.resolve()),
             "progress_jsonl_sha256": sha256(progress_path),
+            "canonical_records": str(canonical_records_path.resolve()),
+            "canonical_records_sha256": sha256(canonical_records_path),
             "materialization_state": str(state_path.resolve()),
             "materialization_state_sha256": sha256(state_path),
         },
