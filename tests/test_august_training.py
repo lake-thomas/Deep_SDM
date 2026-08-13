@@ -25,6 +25,8 @@ from august2026_compare_artifact_probe import (
 from august2026_batch_artifact_probe import reusable_completed_probe
 from august2026_dataset_screen_evidence import pareto_nondominated, synthesize
 from august2026_calibrate_radiometric_augmentation import derive_recipe
+from august2026_freeze_dataset_selection import freeze_selection
+from august2026_loss_screen import build_loss_config, loss_experiment_name
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
@@ -496,6 +498,106 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertEqual(recipe["contrast"], 0.06)
         self.assertEqual(recipe["band_gain"], 0.02)
         self.assertEqual(recipe["max_mean_ndvi_shift"], 0.05)
+
+    def test_dataset_selection_freezes_exact_artifact_hashes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset = root / "dataset.csv"
+            checkpoint = root / "checkpoints" / "best.pt"
+            config = root / "config.json"
+            dataset.write_text("split,presence\ntrain,1\n", encoding="utf-8")
+            checkpoint.parent.mkdir()
+            checkpoint.write_bytes(b"checkpoint")
+            source_config = {
+                "csv_path": str(dataset),
+                "image_dir": str(root),
+                "loss_strategy": "ordinary_bce",
+                "spatial_augmentation": "dihedral",
+                "radiometric_augmentation": False,
+                "dropout": 0.25,
+                "label_smoothing": 0.0,
+                "august_experiment_spec": {
+                    "host": "vitis_labrusca",
+                    "arm": "domain_balanced",
+                    "background_target": 6000,
+                },
+            }
+            config.write_text(json.dumps(source_config), encoding="utf-8")
+            evidence = root / "evidence"
+            evidence.mkdir()
+            combined = pd.DataFrame(
+                [
+                    {
+                        "host": "vitis_labrusca",
+                        "arm": "domain_balanced",
+                        "background_target": 6000,
+                        "experiment": "ordinary_baseline",
+                        "evidence_gate_passed": True,
+                        "pareto_nondominated_within_host": True,
+                        "config_path": str(config),
+                        "config_sha256": sha256(config),
+                        "run_dir": str(root),
+                        "best_checkpoint_sha256": sha256(checkpoint),
+                        "training_dataset_csv_sha256": sha256(dataset),
+                        "artifact_comparison_summary": "comparison.json",
+                        "artifact_relative_signed_did_reduction": 0.4,
+                        "artifact_candidate_absolute_did_mean": 0.04,
+                        "test_roc_auc_all_thresholds": 0.95,
+                        "test_brier_score": 0.08,
+                    }
+                ]
+            )
+            combined.to_csv(evidence / "combined_candidate_evidence.csv", index=False)
+            (evidence / "summary.json").write_text(
+                json.dumps({"status": "complete"}), encoding="utf-8"
+            )
+            (evidence / "COMPLETED").write_text("complete\n", encoding="utf-8")
+            output = root / "selection.json"
+            payload = freeze_selection(
+                evidence,
+                [("vitis_labrusca", "domain_balanced", 6000)],
+                {"vitis_labrusca": "Best seam/fit Pareto tradeoff."},
+                output,
+                "test-commit",
+            )
+            self.assertEqual(payload["selection_count"], 1)
+            self.assertEqual(
+                payload["selections"][0]["source_checkpoint_sha256"],
+                sha256(checkpoint),
+            )
+
+    def test_loss_screen_reuses_ordinary_baseline_and_isolates_strategy(self):
+        selection = {
+            "host": "vitis_labrusca",
+            "arm": "domain_balanced",
+            "background_target": 10000,
+            "source_experiment": "ordinary_baseline",
+            "source_checkpoint": "/tmp/best.pt",
+            "source_checkpoint_sha256": "checkpoint-hash",
+        }
+        source = {
+            "experiment": "ordinary_baseline",
+            "output_dir": "/tmp/old",
+            "epochs": 15,
+            "loss_strategy": "ordinary_bce",
+            "spatial_augmentation": "dihedral",
+            "radiometric_augmentation": False,
+            "dropout": 0.25,
+            "label_smoothing": 0.0,
+            "seed": 42,
+        }
+        config = build_loss_config(
+            source,
+            selection,
+            "pos_weight_bce",
+            Path("/tmp/stage"),
+            Path("/tmp/selection.json"),
+            "selection-hash",
+        )
+        self.assertEqual(config["loss_strategy"], "pos_weight_bce")
+        self.assertEqual(config["label_smoothing"], 0.0)
+        self.assertFalse(config["radiometric_augmentation"])
+        self.assertIn("posw", loss_experiment_name(selection, "pos_weight_bce"))
 
 
 if __name__ == "__main__":
