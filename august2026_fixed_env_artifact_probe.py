@@ -179,7 +179,14 @@ def load_candidate(
     return model, env_vars, mean_environment
 
 
-def embed_and_predict(model, chips, mean_environment, device, batch_size):
+def embed_and_predict(
+    model,
+    chips,
+    mean_environment,
+    device,
+    batch_size,
+    platt_calibrator=None,
+):
     features, probabilities = {}, {}
     model.eval()
     with torch.inference_mode():
@@ -200,7 +207,12 @@ def embed_and_predict(model, chips, mean_environment, device, batch_size):
                         torch.cat([image_features, environment_features], dim=1)
                     )
                 feature_batches.append(image_features.float().cpu().numpy())
-                probability_batches.append(torch.sigmoid(logits).float().cpu().numpy())
+                raw_probabilities = torch.sigmoid(logits).float().cpu().numpy()
+                probability_batches.append(
+                    inference.apply_platt_probabilities(
+                        raw_probabilities, platt_calibrator
+                    )
+                )
             features[tile] = np.concatenate(feature_batches).mean(axis=0)
             probabilities[tile] = float(np.concatenate(probability_batches).mean())
     return features, probabilities
@@ -313,6 +325,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--platt-calibrator", type=Path, default=None)
     args = parser.parse_args()
     if args.batch_size <= 0:
         parser.error("--batch-size must be positive")
@@ -325,6 +338,8 @@ def main() -> None:
     args = parse_args()
     pairs_path = args.pairs or DEFAULT_PAIRS[args.diagnostic]
     required = [args.checkpoint, args.config, args.dataset, pairs_path]
+    if args.platt_calibrator is not None:
+        required.append(args.platt_calibrator)
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"Missing artifact-probe inputs: {missing}")
@@ -358,8 +373,18 @@ def main() -> None:
         args.checkpoint, args.config, args.dataset, device
     )
     candidate_config = inference.load_json(args.config) or {}
+    platt_calibrator = (
+        inference.validate_platt_calibrator(inference.load_json(args.platt_calibrator))
+        if args.platt_calibrator is not None
+        else None
+    )
     features, probabilities = embed_and_predict(
-        model, chips, mean_environment, device, args.batch_size
+        model,
+        chips,
+        mean_environment,
+        device,
+        args.batch_size,
+        platt_calibrator=platt_calibrator,
     )
     metrics = pair_metrics(
         args.diagnostic, pairs, features, probabilities, raw_vectors
@@ -394,6 +419,21 @@ def main() -> None:
         "pairs_sha256": sha256(pairs_path),
         "environment_features": env_vars,
         "fixed_environment_source": "training_split_feature_means",
+        "score_space": (
+            "platt_calibrated_probability"
+            if platt_calibrator is not None
+            else "raw_sigmoid_probability"
+        ),
+        "platt_calibrator": (
+            str(args.platt_calibrator.resolve())
+            if args.platt_calibrator is not None
+            else None
+        ),
+        "platt_calibrator_sha256": (
+            sha256(args.platt_calibrator)
+            if args.platt_calibrator is not None
+            else None
+        ),
         "code_commit": subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=Path(__file__).resolve().parent,

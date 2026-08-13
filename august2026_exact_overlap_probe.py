@@ -16,6 +16,8 @@ import rasterio
 import torch
 from rasterio.windows import Window
 
+import inference_multimodal_production as inference
+
 from august2026_batch_artifact_probe import (
     select_completed_candidates,
     write_csv_atomic,
@@ -86,6 +88,7 @@ def predict_chips(
     mean_environment: np.ndarray,
     device: torch.device,
     batch_size: int,
+    platt_calibrator=None,
 ) -> tuple[np.ndarray, np.ndarray]:
     features, probabilities = [], []
     model.eval()
@@ -105,7 +108,12 @@ def predict_chips(
                     torch.cat([image_features, environment_features], dim=1)
                 )
             features.append(image_features.float().cpu().numpy())
-            probabilities.append(torch.sigmoid(logits).float().cpu().numpy())
+            raw_probabilities = torch.sigmoid(logits).float().cpu().numpy()
+            probabilities.append(
+                inference.apply_platt_probabilities(
+                    raw_probabilities, platt_calibrator
+                )
+            )
     return np.concatenate(features), np.concatenate(probabilities).reshape(-1)
 
 
@@ -152,7 +160,13 @@ def compare_exact_overlap(
     return merged, summary
 
 
-def reusable_output(output_dir: Path, candidate: dict, baseline_hash: str) -> bool:
+def reusable_output(
+    output_dir: Path,
+    candidate: dict,
+    baseline_hash: str,
+    score_space: str = "raw_sigmoid_probability",
+    platt_calibrator_sha256: str | None = None,
+) -> bool:
     required = [
         output_dir / "COMPLETED",
         output_dir / "summary.json",
@@ -168,6 +182,8 @@ def reusable_output(output_dir: Path, candidate: dict, baseline_hash: str) -> bo
         and summary.get("config_sha256") == sha256(candidate["config_path_object"])
         and summary.get("dataset_sha256") == sha256(candidate["dataset_path"])
         and summary.get("baseline_metrics_sha256") == baseline_hash
+        and summary.get("score_space") == score_space
+        and summary.get("platt_calibrator_sha256") == platt_calibrator_sha256
     )
 
 
@@ -180,6 +196,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--resume-completed", action="store_true")
+    parser.add_argument(
+        "--score-space",
+        choices=["raw", "configured"],
+        default="raw",
+        help="Raw sigmoid scores, or the candidate's configured Platt score space.",
+    )
     args = parser.parse_args()
     if args.batch_size <= 0:
         parser.error("--batch-size must be positive")
@@ -209,10 +231,25 @@ def main() -> None:
 
     pending, completed = [], []
     for candidate in candidates:
+        calibrator_path = (
+            candidate["configured_calibrator_path"]
+            if args.score_space == "configured"
+            else None
+        )
+        output_score_space = (
+            "platt_calibrated_probability"
+            if calibrator_path is not None
+            else "raw_sigmoid_probability"
+        )
+        calibrator_hash = sha256(calibrator_path) if calibrator_path else None
         output_dir = args.output_root / candidate["experiment"]
         if output_dir.exists():
             if args.resume_completed and reusable_output(
-                output_dir, candidate, baseline_hash
+                output_dir,
+                candidate,
+                baseline_hash,
+                score_space=output_score_space,
+                platt_calibrator_sha256=calibrator_hash,
             ):
                 completed.append(candidate["experiment"])
                 continue
@@ -265,6 +302,7 @@ def main() -> None:
         "completed_experiments": completed,
         "pending_experiments": [candidate["experiment"] for candidate in pending],
         "code_commit": code_commit,
+        "requested_score_space": args.score_space,
     }
     write_json_atomic(args.output_root / "batch_status.json", status)
     completion_marker = args.output_root / "COMPLETED"
@@ -280,10 +318,32 @@ def main() -> None:
             candidate["dataset_path"],
             device,
         )
+        calibrator_path = (
+            candidate["configured_calibrator_path"]
+            if args.score_space == "configured"
+            else None
+        )
+        platt_calibrator = (
+            inference.validate_platt_calibrator(
+                inference.load_json(calibrator_path)
+            )
+            if calibrator_path is not None
+            else None
+        )
+        output_score_space = (
+            "platt_calibrated_probability"
+            if platt_calibrator is not None
+            else "raw_sigmoid_probability"
+        )
         features, probabilities = {}, {}
         for acquisition, chips in images.items():
             features[acquisition], probabilities[acquisition] = predict_chips(
-                model, chips, mean_environment, device, args.batch_size
+                model,
+                chips,
+                mean_environment,
+                device,
+                args.batch_size,
+                platt_calibrator=platt_calibrator,
             )
         rows = []
         ordered_baseline = baseline.sort_values("chip_id")
@@ -332,6 +392,13 @@ def main() -> None:
             "baseline_metrics_sha256": baseline_hash,
             "environment_features": env_vars,
             "fixed_environment_source": "candidate_training_split_feature_means",
+            "score_space": output_score_space,
+            "platt_calibrator": (
+                str(calibrator_path.resolve()) if calibrator_path else None
+            ),
+            "platt_calibrator_sha256": (
+                sha256(calibrator_path) if calibrator_path else None
+            ),
             "code_commit": code_commit,
             "guardrail": (
                 "Same-ground observational replay isolates acquisition appearance more "

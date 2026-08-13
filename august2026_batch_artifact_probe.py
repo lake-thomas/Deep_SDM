@@ -107,8 +107,19 @@ def select_completed_candidates(
                 "checkpoint_path": Path(row["run_dir"]) / "checkpoints" / "best.pt",
                 "config_path_object": config_path,
                 "dataset_path": Path(config["csv_path"]),
+                "configured_calibrator_path": (
+                    Path(row["run_dir"]) / "platt_calibrator.json"
+                    if str(config.get("postfit_calibration", "none")).lower()
+                    == "platt"
+                    else None
+                ),
             }
         )
+        calibrator_path = candidates[-1]["configured_calibrator_path"]
+        if calibrator_path is not None and not calibrator_path.is_file():
+            raise FileNotFoundError(
+                f"Configured Platt calibrator is missing: {calibrator_path}"
+            )
     if failures:
         raise RuntimeError(f"Candidate training evidence gate failed: {failures}")
     return candidates
@@ -142,6 +153,8 @@ def reusable_completed_probe(
     config_path: Path,
     dataset_path: Path,
     pairs_path: Path,
+    score_space: str = "raw_sigmoid_probability",
+    platt_calibrator_sha256: str | None = None,
 ) -> bool:
     summary_path = output_dir / "summary.json"
     required = [
@@ -159,8 +172,13 @@ def reusable_completed_probe(
         "dataset_sha256": sha256(dataset_path),
         "pairs_sha256": sha256(pairs_path),
     }
-    return summary.get("status") == "complete" and all(
-        summary.get(key) == value for key, value in expected.items()
+    return (
+        summary.get("status") == "complete"
+        and summary.get("score_space") == score_space
+        and summary.get("platt_calibrator_sha256") == platt_calibrator_sha256
+        and all(
+            summary.get(key) == value for key, value in expected.items()
+        )
     )
 
 
@@ -177,6 +195,8 @@ def write_candidate_outputs(
     env_vars: list[str],
     device: torch.device,
     code_commit: str,
+    score_space: str,
+    platt_calibrator_path: Path | None,
 ) -> dict:
     checkpoint_path = candidate["checkpoint_path"]
     config_path = candidate["config_path_object"]
@@ -217,6 +237,13 @@ def write_candidate_outputs(
         "pairs_sha256": sha256(pairs_path),
         "environment_features": env_vars,
         "fixed_environment_source": "training_split_feature_means",
+        "score_space": score_space,
+        "platt_calibrator": (
+            str(platt_calibrator_path.resolve()) if platt_calibrator_path else None
+        ),
+        "platt_calibrator_sha256": (
+            sha256(platt_calibrator_path) if platt_calibrator_path else None
+        ),
         "code_commit": code_commit,
         "guardrail": (
             "Matched observational acquisition-boundary replay with environmental "
@@ -314,6 +341,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--resume-completed", action="store_true")
+    parser.add_argument(
+        "--score-space",
+        choices=["raw", "configured"],
+        default="raw",
+        help="Raw sigmoid scores, or the candidate's configured Platt score space.",
+    )
     args = parser.parse_args()
     if args.batch_size <= 0:
         parser.error("--batch-size must be positive")
@@ -342,6 +375,17 @@ def main() -> None:
     pending = []
     skipped = []
     for candidate in candidates:
+        calibrator_path = (
+            candidate["configured_calibrator_path"]
+            if args.score_space == "configured"
+            else None
+        )
+        output_score_space = (
+            "platt_calibrated_probability"
+            if calibrator_path is not None
+            else "raw_sigmoid_probability"
+        )
+        calibrator_hash = sha256(calibrator_path) if calibrator_path else None
         output_dir = args.output_root / candidate["experiment"]
         if output_dir.exists():
             if args.resume_completed and reusable_completed_probe(
@@ -350,6 +394,8 @@ def main() -> None:
                 candidate["config_path_object"],
                 candidate["dataset_path"],
                 pairs_path,
+                score_space=output_score_space,
+                platt_calibrator_sha256=calibrator_hash,
             ):
                 skipped.append(candidate["experiment"])
                 continue
@@ -371,6 +417,7 @@ def main() -> None:
         "pending_experiments": [item["experiment"] for item in pending],
         "completed_experiments": skipped.copy(),
         "code_commit": code_commit,
+        "requested_score_space": args.score_space,
     }
     write_json_atomic(args.output_root / "batch_status.json", status)
     if not pending:
@@ -405,8 +452,28 @@ def main() -> None:
             candidate["dataset_path"],
             device,
         )
+        calibrator_path = (
+            candidate["configured_calibrator_path"]
+            if args.score_space == "configured"
+            else None
+        )
+        platt_calibrator = (
+            inference.validate_platt_calibrator(read_json(calibrator_path))
+            if calibrator_path is not None
+            else None
+        )
+        output_score_space = (
+            "platt_calibrated_probability"
+            if platt_calibrator is not None
+            else "raw_sigmoid_probability"
+        )
         features, probabilities = embed_and_predict(
-            model, chips, mean_environment, device, args.batch_size
+            model,
+            chips,
+            mean_environment,
+            device,
+            args.batch_size,
+            platt_calibrator=platt_calibrator,
         )
         metrics = pair_metrics(
             diagnostic, pairs, features, probabilities, raw_vectors
@@ -423,6 +490,8 @@ def main() -> None:
             env_vars=env_vars,
             device=device,
             code_commit=code_commit,
+            score_space=output_score_space,
+            platt_calibrator_path=calibrator_path,
         )
         status["completed_experiments"].append(candidate["experiment"])
         status["pending_experiments"] = [

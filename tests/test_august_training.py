@@ -28,7 +28,10 @@ from august2026_dataset_screen_evidence import pareto_nondominated, synthesize
 from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_freeze_dataset_selection import freeze_selection
 from august2026_loss_screen import build_loss_config, loss_experiment_name
-from august2026_exact_overlap_probe import compare_exact_overlap
+from august2026_exact_overlap_probe import (
+    compare_exact_overlap,
+    reusable_output as reusable_exact_overlap_output,
+)
 import august2026_materialization_attrition_audit as attrition_audit
 from august2026_materialization_attrition_audit import distribution_shift
 from august2026_wait_for_dataset_screen import smoke_evidence_ready
@@ -446,6 +449,8 @@ class AugustExperimentDesignTests(unittest.TestCase):
                         "config_sha256": sha256(config),
                         "dataset_sha256": sha256(dataset),
                         "pairs_sha256": sha256(pairs),
+                        "score_space": "raw_sigmoid_probability",
+                        "platt_calibrator_sha256": None,
                     }
                 ),
                 encoding="utf-8",
@@ -456,6 +461,116 @@ class AugustExperimentDesignTests(unittest.TestCase):
             dataset.write_text("changed\n", encoding="utf-8")
             self.assertFalse(
                 reusable_completed_probe(output, checkpoint, config, dataset, pairs)
+            )
+
+    def test_artifact_resume_rejects_score_space_or_calibrator_change(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            checkpoint = root / "best.pt"
+            config = root / "config.json"
+            dataset = root / "dataset.csv"
+            pairs = root / "pairs.csv"
+            calibrator = root / "platt_calibrator.json"
+            for path, content in (
+                (checkpoint, b"checkpoint"),
+                (config, b"{}"),
+                (dataset, b"split,presence\ntrain,1\n"),
+                (pairs, b"pair_id\n1\n"),
+                (calibrator, b'{"method":"platt","slope":1,"intercept":0}'),
+            ):
+                path.write_bytes(content)
+            output = root / "probe"
+            (output / "june_baseline_comparison").mkdir(parents=True)
+            for path in (
+                output / "COMPLETED",
+                output / "pair_metrics.csv",
+                output / "june_baseline_comparison" / "COMPLETED",
+            ):
+                path.write_text("complete\n", encoding="utf-8")
+            calibrator_hash = sha256(calibrator)
+            (output / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "checkpoint_sha256": sha256(checkpoint),
+                        "config_sha256": sha256(config),
+                        "dataset_sha256": sha256(dataset),
+                        "pairs_sha256": sha256(pairs),
+                        "score_space": "platt_calibrated_probability",
+                        "platt_calibrator_sha256": calibrator_hash,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                reusable_completed_probe(
+                    output,
+                    checkpoint,
+                    config,
+                    dataset,
+                    pairs,
+                    score_space="platt_calibrated_probability",
+                    platt_calibrator_sha256=calibrator_hash,
+                )
+            )
+            self.assertFalse(
+                reusable_completed_probe(
+                    output, checkpoint, config, dataset, pairs
+                )
+            )
+
+    def test_exact_overlap_resume_rejects_score_space_or_calibrator_change(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            checkpoint = root / "best.pt"
+            config = root / "config.json"
+            dataset = root / "dataset.csv"
+            for path, content in (
+                (checkpoint, b"checkpoint"),
+                (config, b"{}"),
+                (dataset, b"split,presence\ntrain,1\n"),
+            ):
+                path.write_bytes(content)
+            candidate = {
+                "checkpoint_path": checkpoint,
+                "config_path_object": config,
+                "dataset_path": dataset,
+            }
+            output = root / "exact"
+            output.mkdir()
+            for name in (
+                "COMPLETED",
+                "exact_overlap_candidate_metrics.csv",
+                "paired_june_comparison.csv",
+            ):
+                (output / name).write_text("complete\n", encoding="utf-8")
+            (output / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "checkpoint_sha256": sha256(checkpoint),
+                        "config_sha256": sha256(config),
+                        "dataset_sha256": sha256(dataset),
+                        "baseline_metrics_sha256": "baseline-hash",
+                        "score_space": "raw_sigmoid_probability",
+                        "platt_calibrator_sha256": None,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                reusable_exact_overlap_output(
+                    output, candidate, "baseline-hash"
+                )
+            )
+            self.assertFalse(
+                reusable_exact_overlap_output(
+                    output,
+                    candidate,
+                    "baseline-hash",
+                    score_space="platt_calibrated_probability",
+                    platt_calibrator_sha256="calibrator-hash",
+                )
             )
 
     def test_dataset_screen_pareto_flags_do_not_use_an_arbitrary_score(self):
