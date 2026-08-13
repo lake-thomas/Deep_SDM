@@ -407,6 +407,78 @@ class StrictChipSourceTests(unittest.TestCase):
                 self.assertEqual(src.tags()["naip_source_lock_mode"], "strict")
         finally:
             temporary.cleanup()
+
+    def test_strict_source_lock_ignores_irrelevant_fractional_grid_neighbor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            intended = root / "m_a_20220715.tif"
+            neighbor = root / "m_b_20220715.tif"
+            _write_four_band_raster(intended, 10, left=0, top=8, width=8, height=8)
+            _write_four_band_raster(neighbor, 20, left=4.3, top=8, width=4, height=8)
+            tiles = gpd.GeoDataFrame(
+                [
+                    _tile_row(intended, "m_a", "CA", "20220715", box(0, 0, 8, 8)),
+                    # Deliberately broad index geometry: it intersects the chip
+                    # although the intended source already supplies every pixel.
+                    _tile_row(neighbor, "m_b", "CA", "20220715", box(3, 0, 8.3, 8)),
+                ],
+                crs="EPSG:4326",
+            )
+            canonical = add_canonical_naip_source_metadata(tiles)
+            output = root / "chip.tif"
+            provenance = extract_naip_chip_for_point(
+                lon=2.5,
+                lat=4.0,
+                out_fp=str(output),
+                chip_size=4,
+                tileindex_gdf=tiles,
+                naip_file_index={},
+                source_record=canonical.iloc[0],
+                source_lock_mode="strict",
+                min_valid_frac=1.0,
+            )
+            self.assertIsNotNone(provenance)
+            self.assertEqual(provenance["actual_source_count"], 1)
+            self.assertEqual(provenance["actual_source_tile_keys"], "m_a")
+            self.assertFalse(provenance["actual_source_resampled"])
+            with rasterio.open(output) as dataset:
+                self.assertEqual(set(np.unique(dataset.read())), {10})
+
+    def test_strict_source_lock_resamples_same_domain_neighbor_to_intended_grid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            intended = root / "m_a_20220715.tif"
+            neighbor = root / "m_b_20220715.tif"
+            _write_four_band_raster(intended, 10, left=0, top=8)
+            _write_four_band_raster(neighbor, 20, left=3.6, top=8)
+            tiles = gpd.GeoDataFrame(
+                [
+                    _tile_row(intended, "m_a", "CA", "20220715", box(0, 0, 4, 8)),
+                    _tile_row(neighbor, "m_b", "CA", "20220715", box(3.6, 0, 7.6, 8)),
+                ],
+                crs="EPSG:4326",
+            )
+            canonical = add_canonical_naip_source_metadata(tiles)
+            output = root / "chip.tif"
+            provenance = extract_naip_chip_for_point(
+                lon=3.5,
+                lat=4.0,
+                out_fp=str(output),
+                chip_size=4,
+                tileindex_gdf=tiles,
+                naip_file_index={},
+                source_record=canonical.iloc[0],
+                source_lock_mode="strict",
+                min_valid_frac=1.0,
+            )
+            self.assertIsNotNone(provenance)
+            self.assertEqual(provenance["actual_source_count"], 2)
+            self.assertTrue(provenance["actual_source_resampled"])
+            self.assertEqual(
+                provenance["actual_source_resampling_method"],
+                "nearest_to_intended_source_grid",
+            )
+
     def test_strict_source_lock_rejects_cross_acquisition_fill(self):
         temporary, tiles, source_record, output = self._run_chip_case("20210715")
         try:

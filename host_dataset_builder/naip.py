@@ -4,6 +4,8 @@ from .io_utils import (
     add_canonical_naip_source_metadata,
     naip_tile_key,
 )
+from rasterio.features import geometry_mask
+from rasterio.warp import transform_geom
 
 
 def _add_legacy_source_aliases(points: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -129,24 +131,20 @@ def _chip_output_profile(source_profile: dict, chip, chip_size: int, transform, 
 
 
 def _strict_sources_are_compatible(datasets) -> bool:
-    """Reject silent band, dtype, resolution, or pixel-grid changes within a chip."""
+    """Reject silent band, dtype, or ground-resolution changes within a chip.
+
+    Same-acquisition NAIP source tiles are not guaranteed to share one exact
+    pixel-grid origin. They may still be composited deterministically onto the
+    intended source grid with nearest-neighbor resampling.
+    """
     reference = datasets[0]
     if reference.count != 4:
         return False
     ref_res = np.asarray(reference.res, dtype=float)
-    ref_transform = reference.transform
     for dataset in datasets[1:]:
-        if dataset.crs != reference.crs:
-            return False
         if dataset.count != reference.count or dataset.dtypes != reference.dtypes:
             return False
         if not np.allclose(np.asarray(dataset.res, dtype=float), ref_res, rtol=0.0, atol=1e-9):
-            return False
-        x_offset = (dataset.transform.c - ref_transform.c) / ref_res[0]
-        y_offset = (dataset.transform.f - ref_transform.f) / ref_res[1]
-        if not np.isclose(x_offset, round(x_offset), atol=1e-6):
-            return False
-        if not np.isclose(y_offset, round(y_offset), atol=1e-6):
             return False
     return True
 
@@ -186,6 +184,7 @@ def _strict_source_chip(
             height=chip_size,
         )
         chip_bounds = rasterio.windows.bounds(chip_window, source_ds.transform)
+        chip_transform = rasterio.windows.transform(chip_window, source_ds.transform)
         chip_crs = source_ds.crs
         source_res = source_ds.res
 
@@ -230,42 +229,103 @@ def _strict_source_chip(
         return None
 
 
-    used_path_identities = {_path_identity(path) for path in source_paths}
-    used_rows = same_domain[same_domain["_source_path_identity"].isin(used_path_identities)].copy()
-    actual_tile_keys = sorted(used_rows["source_tile_key"].dropna().astype(str).unique())
-    actual_filenames = sorted(used_rows["source_filename"].dropna().astype(str).unique())
-    intended_source_used = source_identity in used_path_identities
-
     datasets = []
     try:
         for path in source_paths:
             datasets.append(rasterio.open(path))
-        if not _strict_sources_are_compatible(datasets):
-            return None
-        mosaic, out_transform = merge(
-            datasets,
-            bounds=chip_bounds,
-            res=source_res,
-            nodata=0,
-            masked=True,
-        )
-        if mosaic.shape[1:] != (chip_size, chip_size):
-            return None
-        valid = ~np.ma.getmaskarray(mosaic)
-        valid_pixels = np.all(valid, axis=0)
-        valid_frac = float(valid_pixels.mean())
-        if valid_frac + 1e-12 < min_valid_frac:
+        if not datasets or not _strict_sources_are_compatible([datasets[0]]):
             return None
 
-        chip = np.ma.filled(mosaic, fill_value=0)
+        # Composite only the portion each same-domain raster actually covers.
+        # The intended file is first and therefore authoritative wherever it
+        # has support. Neighbors fill only uncovered pixels. This avoids the
+        # prior all-or-nothing rejection when an irrelevant overlapping index
+        # polygon referred to a fractional-grid-offset neighbor.
+        reference = datasets[0]
+        chip = np.zeros(
+            (reference.count, chip_size, chip_size),
+            dtype=np.dtype(reference.dtypes[0]),
+        )
+        covered = np.zeros((chip_size, chip_size), dtype=bool)
+        used_paths: list[str] = []
+        resampled_neighbor = False
+        for path, dataset in zip(source_paths, datasets):
+            if not _strict_sources_are_compatible([reference, dataset]):
+                continue
+            raster_polygon = box(*dataset.bounds).__geo_interface__
+            if dataset.crs != chip_crs:
+                raster_polygon = transform_geom(
+                    dataset.crs,
+                    chip_crs,
+                    raster_polygon,
+                    precision=-1,
+                )
+            source_coverage = geometry_mask(
+                [raster_polygon],
+                out_shape=(chip_size, chip_size),
+                transform=chip_transform,
+                invert=True,
+                all_touched=False,
+            )
+            new_coverage = source_coverage & ~covered
+            if not new_coverage.any():
+                continue
+
+            warped = np.zeros_like(chip)
+            for band_index in range(1, reference.count + 1):
+                reproject(
+                    source=rasterio.band(dataset, band_index),
+                    destination=warped[band_index - 1],
+                    src_transform=dataset.transform,
+                    src_crs=dataset.crs,
+                    src_nodata=None,
+                    dst_transform=chip_transform,
+                    dst_crs=chip_crs,
+                    dst_nodata=0,
+                    resampling=Resampling.nearest,
+                )
+            chip[:, new_coverage] = warped[:, new_coverage]
+            covered |= source_coverage
+            used_paths.append(path)
+
+            same_grid = dataset.crs == chip_crs
+            if same_grid:
+                x_offset = (dataset.transform.c - chip_transform.c) / source_res[0]
+                y_offset = (dataset.transform.f - chip_transform.f) / source_res[1]
+                same_grid = np.isclose(x_offset, round(x_offset), atol=1e-6) and np.isclose(
+                    y_offset,
+                    round(y_offset),
+                    atol=1e-6,
+                )
+            resampled_neighbor |= not bool(same_grid)
+            if covered.all():
+                break
+
+        valid_frac = float(covered.mean())
+        if valid_frac + 1e-12 < min_valid_frac:
+            return None
+        if not used_paths:
+            return None
+
+        used_path_identities = {_path_identity(path) for path in used_paths}
+        used_rows = same_domain[
+            same_domain["_source_path_identity"].isin(used_path_identities)
+        ].copy()
+        actual_tile_keys = sorted(
+            used_rows["source_tile_key"].dropna().astype(str).unique()
+        )
+        actual_filenames = sorted(
+            used_rows["source_filename"].dropna().astype(str).unique()
+        )
+        intended_source_used = source_identity in used_path_identities
         Path(out_fp).parent.mkdir(parents=True, exist_ok=True)
         partial_fp = f"{out_fp}.partial"
         profile = _chip_output_profile(
             source_profile=datasets[0].profile,
             chip=chip,
             chip_size=chip_size,
-            transform=out_transform,
-            crs=datasets[0].crs,
+            transform=chip_transform,
+            crs=chip_crs,
         )
         with rasterio.open(partial_fp, "w", **profile) as dst:
             dst.write(chip)
@@ -273,8 +333,9 @@ def _strict_source_chip(
                 naip_source_lock_mode="strict",
                 naip_source_archive_state=source_state,
                 naip_source_acq_date=source_date,
-                naip_source_paths=";".join(source_paths),
+                naip_source_paths=";".join(used_paths),
                 naip_valid_frac=f"{valid_frac:.12f}",
+                naip_neighbor_resampled=str(bool(resampled_neighbor)).lower(),
             )
         os.replace(partial_fp, out_fp)
 
@@ -282,16 +343,20 @@ def _strict_source_chip(
             "actual_source_lock_mode": "strict",
             "actual_source_archive_state": source_state,
             "actual_source_acq_date": source_date,
-            "actual_source_paths": ";".join(source_paths),
-            "actual_source_paths_json": json.dumps(source_paths),
+            "actual_source_paths": ";".join(used_paths),
+            "actual_source_paths_json": json.dumps(used_paths),
             "actual_source_tile_keys": ";".join(actual_tile_keys),
             "actual_source_filenames": ";".join(actual_filenames),
-            "actual_source_count": len(source_paths),
+            "actual_source_count": len(used_paths),
             "actual_multi_state": False,
             "actual_multi_acquisition": False,
             "intended_source_used": intended_source_used,
             "source_provenance_match": intended_source_used,
             "naip_valid_frac": valid_frac,
+            "actual_source_resampled": bool(resampled_neighbor),
+            "actual_source_resampling_method": (
+                "nearest_to_intended_source_grid" if resampled_neighbor else "none"
+            ),
         }
     finally:
         for dataset in datasets:
