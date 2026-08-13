@@ -30,6 +30,7 @@ SUPPORT_FILES = [
     "quickviews_and_mosaic_qa.sbatch",
     "resolve_production_candidate.py",
     "submit_inference.sbatch",
+    "submit_inference_arrays.sh",
     "submit_inference_qa.sbatch",
     "submit_release_mosaics.sh",
     "submit_shards.sh",
@@ -116,6 +117,8 @@ def prepare_bundle(
             "deterministic_mc_samples": 1,
             "uncertainty_mc_samples": 10,
             "calibration": "candidate-specific configured release score space",
+            "active_tiled_output_root": "/share/rkmeente/talake2/host_sdm_august2026/production_model_inference_august2026",
+            "durable_mosaic_output_root": "/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM/Outputs_Host_NAIP_SDMs/production_model_inference_august2026",
         },
         "guardrail": (
             "Run smoke shards and structural/tag QA before submitting full shards. "

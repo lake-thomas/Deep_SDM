@@ -11,8 +11,9 @@ BUNDLE_ROOT="$4"
 EXPECTED_INPUT_COUNT="$5"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HPC_ROOT="${HPC_ROOT:-/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-${HPC_ROOT}/Outputs_Host_NAIP_SDMs/production_model_inference_august2026}"
-mkdir -p "${OUTPUT_ROOT}/_slurm_logs"
+ACTIVE_OUTPUT_ROOT="${ACTIVE_OUTPUT_ROOT:-/share/rkmeente/talake2/host_sdm_august2026/production_model_inference_august2026}"
+DURABLE_OUTPUT_ROOT="${DURABLE_OUTPUT_ROOT:-${HPC_ROOT}/Outputs_Host_NAIP_SDMs/production_model_inference_august2026}"
+mkdir -p "${DURABLE_OUTPUT_ROOT}/_slurm_logs"
 jobs=()
 for release_product in prediction uncertainty count; do
   case "${release_product}" in
@@ -20,12 +21,12 @@ for release_product in prediction uncertainty count; do
     uncertainty) source_product=uncertainty; source_suffix=uncertainty ;;
     count) source_product=deterministic; source_suffix=count ;;
   esac
-  source_root="${OUTPUT_ROOT}/${REGION}/${HOST_SLUG}/${source_product}"
-  export_vars="ALL,HOST_SLUG=${HOST_SLUG},REGION=${REGION},RELEASE_PRODUCT=${release_product},SOURCE_SUFFIX=${source_suffix},SOURCE_OUTPUT_ROOT=${source_root},TILE_MANIFEST=${TILE_MANIFEST},BUNDLE_ROOT=${BUNDLE_ROOT}"
+  source_root="${ACTIVE_OUTPUT_ROOT}/${REGION}/${HOST_SLUG}/${source_product}"
+  export_vars="ALL,HOST_SLUG=${HOST_SLUG},REGION=${REGION},RELEASE_PRODUCT=${release_product},SOURCE_SUFFIX=${source_suffix},SOURCE_OUTPUT_ROOT=${source_root},TILE_MANIFEST=${TILE_MANIFEST},BUNDLE_ROOT=${BUNDLE_ROOT},MOSAIC_OUTPUT_ROOT=${DURABLE_OUTPUT_ROOT}"
   job="$(sbatch --export="${export_vars}" "${SCRIPT_DIR}/mosaic_product.sbatch" | awk '{print $4}')"
   jobs+=("${job}")
 done
 dependency="$(IFS=:; echo "${jobs[*]}")"
 sbatch --dependency="afterok:${dependency}" \
-  --export=ALL,HOST_SLUG="${HOST_SLUG}",REGION="${REGION}",EXPECTED_INPUT_COUNT="${EXPECTED_INPUT_COUNT}",BUNDLE_ROOT="${BUNDLE_ROOT}" \
+  --export=ALL,HOST_SLUG="${HOST_SLUG}",REGION="${REGION}",EXPECTED_INPUT_COUNT="${EXPECTED_INPUT_COUNT}",BUNDLE_ROOT="${BUNDLE_ROOT}",MOSAIC_OUTPUT_ROOT="${DURABLE_OUTPUT_ROOT}" \
   "${SCRIPT_DIR}/quickviews_and_mosaic_qa.sbatch"

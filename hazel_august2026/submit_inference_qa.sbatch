@@ -20,7 +20,7 @@ if [[ "${PRODUCT}" != "deterministic" && "${PRODUCT}" != "uncertainty" ]]; then
   exit 2
 fi
 HPC_ROOT="${HPC_ROOT:-/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-${HPC_ROOT}/Outputs_Host_NAIP_SDMs/production_model_inference_august2026}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/share/rkmeente/talake2/host_sdm_august2026/production_model_inference_august2026}"
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-/usr/local/usrapps/rkmeente/talake2/host-naip-sdm}"
 QA_ROOT="${OUTPUT_ROOT}/_run_metadata/qa/${REGION}/${HOST_SLUG}/${PRODUCT}"
 SOURCE_ROOT="${OUTPUT_ROOT}/${REGION}/${HOST_SLUG}/${PRODUCT}"

@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -133,6 +135,40 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_hazel_array_launcher_defaults_to_a_bounded_dry_run(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            shards = root / "shards"
+            shards.mkdir()
+            (shards / "shard_00000.txt").write_text("/archive/tile.tif\n", encoding="utf-8")
+            write_json(
+                shards / "shard_metadata.json",
+                {"status": "complete", "shard_count": 1},
+            )
+            (shards / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            registry = root / "registry.tsv"
+            registry.write_text("host\nailanthus_altissima\n", encoding="utf-8")
+            bundle = root / "bundle"
+            bundle.mkdir()
+            (bundle / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            log = root / "submission.tsv"
+            script = Path(__file__).resolve().parents[1] / "hazel_august2026" / "submit_inference_arrays.sh"
+            environment = dict(os.environ)
+            environment["OUTPUT_ROOT"] = str(root / "active")
+            environment["HPC_ROOT"] = str(root / "durable")
+            result = subprocess.run(
+                [
+                    "bash", str(script), "east_of_mississippi", "deterministic",
+                    str(shards), str(registry), str(bundle), str(log),
+                    "ailanthus_altissima",
+                ],
+                check=True, capture_output=True, text=True, env=environment,
+            )
+            self.assertIn("DRY_RUN command=", result.stdout)
+            submission = pd.read_csv(log, sep="\t")
+            self.assertEqual(submission.loc[0, "job_id"], "DRY_RUN")
+            self.assertEqual(int(submission.loc[0, "dry_run"]), 1)
+
     def test_release_evidence_requires_complete_five_host_chain(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

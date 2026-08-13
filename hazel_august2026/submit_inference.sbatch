@@ -10,9 +10,16 @@ set -euo pipefail
 HOST_SLUG="${HOST_SLUG:?Set HOST_SLUG}"
 REGION="${REGION:?Set REGION}"
 PRODUCT="${PRODUCT:?Set PRODUCT to deterministic or uncertainty}"
-TILE_LIST="${TILE_LIST:?Set TILE_LIST}"
 PRODUCTION_REGISTRY="${PRODUCTION_REGISTRY:?Set PRODUCTION_REGISTRY}"
-SHARD_ID="${SHARD_ID:-manual}"
+SHARD_ID="${SHARD_ID:-}"
+if [[ -z "${SHARD_ID}" ]]; then
+  array_index="${SLURM_ARRAY_TASK_ID:?Set SHARD_ID or run as a Slurm array}"
+  printf -v SHARD_ID '%05d' "${array_index}"
+  SHARD_DIR="${SHARD_DIR:?Set SHARD_DIR for array execution}"
+  TILE_LIST="${SHARD_DIR}/shard_${SHARD_ID}.txt"
+else
+  TILE_LIST="${TILE_LIST:?Set TILE_LIST for single-shard execution}"
+fi
 if [[ ! -s "${TILE_LIST}" ]]; then
   echo "Missing tile shard: ${TILE_LIST}" >&2
   exit 2
@@ -23,7 +30,7 @@ if [[ "${PRODUCT}" != "deterministic" && "${PRODUCT}" != "uncertainty" ]]; then
 fi
 
 HPC_ROOT="${HPC_ROOT:-/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-${HPC_ROOT}/Outputs_Host_NAIP_SDMs/production_model_inference_august2026}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/share/rkmeente/talake2/host_sdm_august2026/production_model_inference_august2026}"
 BUNDLE_ROOT="${BUNDLE_ROOT:?Set BUNDLE_ROOT to the staged frozen bundle}"
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-/usr/local/usrapps/rkmeente/talake2/host-naip-sdm}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
