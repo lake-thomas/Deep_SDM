@@ -52,18 +52,28 @@ def materialization_passed(host: str) -> bool:
 
 def attrition_audit_passed(host: str) -> bool:
     path = DATA_ROOT / host / "qa" / "materialization_attrition_audit" / "summary.json"
-    if not path.is_file():
+    provenance_path = DATA_ROOT / host / "qa" / "candidate_builder_provenance" / "summary.json"
+    if not path.is_file() or not provenance_path.is_file():
         return False
     state = read_json(path)
-    return bool(state.get("status") == "complete" and state.get("production_ready"))
+    provenance = read_json(provenance_path)
+    return bool(
+        state.get("status") == "complete" and state.get("production_ready")
+        and provenance.get("status") == "complete"
+        and provenance.get("production_ready")
+    )
 
 
 def ensure_attrition_audit(host: str) -> None:
     if attrition_audit_passed(host):
         return
     output = DATA_ROOT / host / "qa" / "materialization_attrition_audit"
-    if output.exists():
-        raise RuntimeError(f"Refusing partial or failed attrition audit: {output}")
+    provenance_output = DATA_ROOT / host / "qa" / "candidate_builder_provenance"
+    if output.exists() or provenance_output.exists():
+        raise RuntimeError(
+            f"Refusing partial or failed attrition/provenance audit: "
+            f"{output}; {provenance_output}"
+        )
     subprocess.run(
         [
             str(PYTHON),

@@ -66,10 +66,16 @@ def write_status(payload: dict) -> None:
 
 def attrition_ready(host: str) -> bool:
     path = DATA_ROOT / host / "qa" / "materialization_attrition_audit" / "summary.json"
-    if not path.is_file():
+    provenance_path = DATA_ROOT / host / "qa" / "candidate_builder_provenance" / "summary.json"
+    if not path.is_file() or not provenance_path.is_file():
         return False
     state = read_json(path)
-    return bool(state.get("status") == "complete" and state.get("production_ready"))
+    provenance = read_json(provenance_path)
+    return bool(
+        state.get("status") == "complete" and state.get("production_ready")
+        and provenance.get("status") == "complete"
+        and provenance.get("production_ready")
+    )
 
 
 def smoke_evidence_ready(metrics: pd.DataFrame) -> bool:
