@@ -22,7 +22,8 @@ from august2026_compare_artifact_probe import (
     exact_pair_merge,
     paired_comparison,
 )
-from august2026_fixed_env_artifact_probe import pair_metrics
+from august2026_batch_artifact_probe import reusable_completed_probe
+from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
 from model import HostModelBase
@@ -321,6 +322,48 @@ class AugustExperimentDesignTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "exact frozen pair set"):
             exact_pair_merge(baseline, partial)
+
+    def test_batch_artifact_resume_requires_matching_complete_inputs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            checkpoint = root / "best.pt"
+            config = root / "config.json"
+            dataset = root / "dataset.csv"
+            pairs = root / "pairs.csv"
+            for path, content in (
+                (checkpoint, b"checkpoint"),
+                (config, b"{}"),
+                (dataset, b"split,presence\ntrain,1\n"),
+                (pairs, b"pair_id\n1\n"),
+            ):
+                path.write_bytes(content)
+            output = root / "probe"
+            (output / "june_baseline_comparison").mkdir(parents=True)
+            for path in (
+                output / "COMPLETED",
+                output / "pair_metrics.csv",
+                output / "june_baseline_comparison" / "COMPLETED",
+            ):
+                path.write_text("complete\n", encoding="utf-8")
+            (output / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "checkpoint_sha256": sha256(checkpoint),
+                        "config_sha256": sha256(config),
+                        "dataset_sha256": sha256(dataset),
+                        "pairs_sha256": sha256(pairs),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                reusable_completed_probe(output, checkpoint, config, dataset, pairs)
+            )
+            dataset.write_text("changed\n", encoding="utf-8")
+            self.assertFalse(
+                reusable_completed_probe(output, checkpoint, config, dataset, pairs)
+            )
 
 
 if __name__ == "__main__":
