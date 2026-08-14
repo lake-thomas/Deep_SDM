@@ -33,6 +33,15 @@ def _read_json(path: Path) -> dict:
         return json.load(stream)
 
 
+def read_materialization_records(path: Path) -> pd.DataFrame:
+    """Read exact acquisition dates as identifiers, never floating values."""
+    return pd.read_csv(
+        path,
+        low_memory=False,
+        dtype={"actual_source_acq_date": "string"},
+    )
+
+
 def refinalize(
     candidate_package: Path,
     output_root: Path,
@@ -78,7 +87,7 @@ def refinalize(
         )
 
     metadata = _read_json(metadata_path)
-    records = pd.read_csv(records_path, low_memory=False)
+    records = read_materialization_records(records_path)
     successes = records[records["materialization_status"] == "success"].copy()
     assignments = pd.read_csv(assignments_path, low_memory=False)
     assignment_audit = pd.read_csv(assignment_audit_path, low_memory=False)

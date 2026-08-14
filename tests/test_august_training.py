@@ -46,6 +46,7 @@ from august2026_materialization_attrition_audit import (
     canonicalize_progress_attempts,
     distribution_shift,
 )
+from august2026_refinalize_materialized_manifests import read_materialization_records
 from august2026_wait_for_dataset_screen import smoke_evidence_ready
 from august2026_wait_for_control_screen import control_gates_ready
 from august2026_loss_screen_evidence import strict_evidence_gate
@@ -1110,6 +1111,19 @@ class AugustExperimentDesignTests(unittest.TestCase):
         )
         self.assertAlmostEqual(total_variation, 0.25)
         self.assertAlmostEqual(maximum_shift, 0.25)
+
+    def test_refinalization_preserves_acquisition_dates_as_identifiers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            records = Path(temp_dir) / "materialization_records.csv"
+            records.write_text(
+                "sample_id,materialization_status,actual_source_acq_date\n"
+                "success_1,success,20220902\n"
+                "failure_1,failed,\n",
+                encoding="utf-8",
+            )
+            loaded = read_materialization_records(records)
+            self.assertEqual(loaded.loc[0, "actual_source_acq_date"], "20220902")
+            self.assertTrue(pd.isna(loaded.loc[1, "actual_source_acq_date"]))
 
     def test_materialization_retry_log_collapses_to_verified_final_state(self):
         attempts = pd.DataFrame(
