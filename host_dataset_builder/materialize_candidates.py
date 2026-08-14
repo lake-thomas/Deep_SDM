@@ -381,6 +381,152 @@ def _merge_materialized(candidate: pd.DataFrame, records: pd.DataFrame) -> pd.Da
     )
 
 
+def select_domain_replenished_backgrounds(
+    ranked_reserve: pd.DataFrame,
+    successful_reserve: pd.DataFrame,
+    targets: list[int],
+    domain_column: str = "source_domain_id",
+    rank_column: str = "nested_rank",
+) -> tuple[dict[int, pd.DataFrame], dict[int, dict]]:
+    """Select exact nested targets while preserving intended source domains.
+
+    Materialization failures inside a target prefix are replaced first by the
+    earliest successful reserve sample from a domain that is under its intended
+    prefix count. Any remaining slots are filled by global rank. The latter is
+    unavoidable when a domain lacks enough successful samples anywhere in the
+    reserve. Iterating targets from smallest to largest makes every returned
+    target a strict superset of the preceding target.
+    """
+    required = {"sample_id", domain_column, rank_column}
+    for name, frame in [
+        ("ranked_reserve", ranked_reserve),
+        ("successful_reserve", successful_reserve),
+    ]:
+        missing = sorted(required - set(frame.columns))
+        if missing:
+            raise ValueError(f"{name} lacks required columns: {missing}")
+        if frame["sample_id"].duplicated().any():
+            raise ValueError(f"{name} contains duplicate sample IDs")
+        if frame[domain_column].isna().any():
+            raise ValueError(f"{name} contains missing {domain_column} values")
+
+    ordered_targets = sorted({int(target) for target in targets})
+    if not ordered_targets or any(target <= 0 for target in ordered_targets):
+        raise ValueError("Background targets must contain positive integers")
+    if len(ordered_targets) != len(targets):
+        raise ValueError("Background targets must be unique")
+
+    full = ranked_reserve.sort_values(rank_column, kind="mergesort").reset_index(drop=True)
+    successful = successful_reserve.sort_values(rank_column, kind="mergesort").reset_index(
+        drop=True
+    )
+    if full[rank_column].duplicated().any():
+        raise ValueError(f"ranked_reserve contains duplicate {rank_column} values")
+    if not set(successful["sample_id"]).issubset(set(full["sample_id"])):
+        raise ValueError("successful_reserve contains samples outside ranked_reserve")
+    if ordered_targets[-1] > len(full):
+        raise ValueError("Largest background target exceeds the ranked reserve")
+    if ordered_targets[-1] > len(successful):
+        raise RuntimeError("Largest background target exceeds successful reserve capacity")
+
+    full_identity = full.set_index("sample_id")[[domain_column, rank_column]]
+    successful_identity = successful.set_index("sample_id")[[domain_column, rank_column]]
+    expected_identity = full_identity.loc[successful_identity.index]
+    if not expected_identity[domain_column].astype(str).equals(
+        successful_identity[domain_column].astype(str)
+    ) or not np.allclose(
+        expected_identity[rank_column].astype(float),
+        successful_identity[rank_column].astype(float),
+    ):
+        raise ValueError("Successful reserve domain/rank identity differs from ranked reserve")
+
+    selected_ids: set[str] = set()
+    selections: dict[int, pd.DataFrame] = {}
+    diagnostics: dict[int, dict] = {}
+    successful_domain_capacity = successful[domain_column].value_counts()
+
+    for target in ordered_targets:
+        intended = full.head(target)
+        intended_counts = intended[domain_column].value_counts()
+        current = successful[successful["sample_id"].astype(str).isin(selected_ids)]
+        current_counts = current[domain_column].value_counts()
+        deficits = {
+            domain: max(int(count) - int(current_counts.get(domain, 0)), 0)
+            for domain, count in intended_counts.items()
+        }
+        slots = target - len(selected_ids)
+
+        # Global rank orders equally useful same-domain replacements without
+        # introducing an arbitrary lexical preference among acquisition domains.
+        for row in successful.itertuples(index=False):
+            if slots == 0:
+                break
+            sample_id = str(getattr(row, "sample_id"))
+            if sample_id in selected_ids:
+                continue
+            domain = getattr(row, domain_column)
+            if deficits.get(domain, 0) <= 0:
+                continue
+            selected_ids.add(sample_id)
+            deficits[domain] -= 1
+            slots -= 1
+
+        # A global fallback is required only when intended domains lack enough
+        # successful reserve capacity (or a prior nested target already carries
+        # an unavoidable excess in another domain).
+        if slots:
+            for sample_id_value in successful["sample_id"]:
+                if slots == 0:
+                    break
+                sample_id = str(sample_id_value)
+                if sample_id in selected_ids:
+                    continue
+                selected_ids.add(sample_id)
+                slots -= 1
+        if slots:
+            raise RuntimeError(f"Could not fill exact background target {target}")
+
+        selected = successful[
+            successful["sample_id"].astype(str).isin(selected_ids)
+        ].sort_values(rank_column, kind="mergesort").copy()
+        if len(selected) != target:
+            raise RuntimeError(
+                f"Domain replenishment selected {len(selected)} rows for target {target}"
+            )
+        actual_counts = selected[domain_column].value_counts()
+        domains = intended_counts.index.union(actual_counts.index)
+        absolute_share_shift = (
+            actual_counts.reindex(domains, fill_value=0) / target
+            - intended_counts.reindex(domains, fill_value=0) / target
+        ).abs()
+        capacity_shortfall = int(
+            sum(
+                max(int(count) - int(successful_domain_capacity.get(domain, 0)), 0)
+                for domain, count in intended_counts.items()
+            )
+        )
+        remaining_deficit = int(
+            sum(
+                max(int(count) - int(actual_counts.get(domain, 0)), 0)
+                for domain, count in intended_counts.items()
+            )
+        )
+        selections[target] = selected
+        diagnostics[target] = {
+            "replenishment_strategy": "same_source_domain_then_global_nested_rank",
+            "intended_vs_actual_domain_total_variation": float(
+                0.5 * absolute_share_shift.sum()
+            ),
+            "intended_vs_actual_domain_max_share_shift": float(
+                absolute_share_shift.max() if len(absolute_share_shift) else 0.0
+            ),
+            "domain_capacity_shortfall_count": capacity_shortfall,
+            "remaining_domain_deficit_count": remaining_deficit,
+        }
+
+    return selections, diagnostics
+
+
 def build_model_manifests(
     candidate_package: Path,
     output_root: Path,
@@ -390,6 +536,7 @@ def build_model_manifests(
     metadata: dict,
     n_folds: int,
     seed: int,
+    dataset_root: Path | None = None,
 ) -> dict:
     targets = [int(value) for value in metadata["targets"]]
     presence = pd.read_csv(candidate_package / "presence_manifest.csv", low_memory=False)
@@ -414,14 +561,19 @@ def build_model_manifests(
     # one host-finalization cache so each path is still verified, but only once
     # against the research filesystem during this immutable manifest build.
     path_existence_cache: dict[str, bool] = {}
+    qa_dataset_root = dataset_root or output_root
 
     manifest_root = output_root / "model_manifests"
     for arm in ["random", "domain_balanced"]:
         reserve_paths = sorted((candidate_package / "ranked_reserves").glob(f"*_{arm}_ranked_to_*.csv"))
         if len(reserve_paths) != 1:
             raise RuntimeError(f"Expected one ranked reserve table for {arm}, found {reserve_paths}")
-        reserve = pd.read_csv(reserve_paths[0], low_memory=False).sort_values("nested_rank")
-        reserve = reserve.drop(columns=["split", "block_id", "fold"], errors="ignore").merge(
+        ranked_reserve = pd.read_csv(reserve_paths[0], low_memory=False).sort_values(
+            "nested_rank"
+        )
+        reserve = ranked_reserve.drop(
+            columns=["split", "block_id", "fold"], errors="ignore"
+        ).merge(
             assignments,
             on="sample_id",
             how="left",
@@ -434,9 +586,16 @@ def build_model_manifests(
             how="left",
             validate="one_to_one",
         )
+        backgrounds_by_target, replenishment_diagnostics = (
+            select_domain_replenished_backgrounds(
+                ranked_reserve=ranked_reserve,
+                successful_reserve=reserve,
+                targets=targets,
+            )
+        )
 
         for target in targets:
-            backgrounds = reserve.head(target).copy()
+            backgrounds = backgrounds_by_target[target].copy()
             if len(backgrounds) != target:
                 hard_failures.append(
                     f"{arm}/{target}: only {len(backgrounds)} successful ranked backgrounds"
@@ -454,7 +613,7 @@ def build_model_manifests(
             _atomic_json(uniform_lat_lon, target_root / "uniform_lat_lon_stats.json")
             uniform_qa = audit_dataset_manifest(
                 manifest,
-                dataset_root=output_root,
+                dataset_root=qa_dataset_root,
                 require_actual_provenance=True,
                 enforce_source_tile_isolation=True,
                 enforce_spatial_block_isolation=False,
@@ -481,7 +640,7 @@ def build_model_manifests(
                 )
                 round_qa = audit_dataset_manifest(
                     round_frame,
-                    dataset_root=output_root,
+                    dataset_root=qa_dataset_root,
                     require_actual_provenance=True,
                     enforce_source_tile_isolation=True,
                     enforce_spatial_block_isolation=True,
@@ -510,6 +669,7 @@ def build_model_manifests(
                         (backgrounds["nested_rank"] > target).sum()
                     ),
                     "rows": len(manifest),
+                    **replenishment_diagnostics[target],
                 }
             )
 

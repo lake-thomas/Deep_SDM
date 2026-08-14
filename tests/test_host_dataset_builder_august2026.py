@@ -26,7 +26,10 @@ from host_dataset_builder.env import (
     sample_raw_environment_for_points,
 )
 from host_dataset_builder.io_utils import add_canonical_naip_source_metadata
-from host_dataset_builder.materialize_candidates import reconcile_actual_source_groups
+from host_dataset_builder.materialize_candidates import (
+    reconcile_actual_source_groups,
+    select_domain_replenished_backgrounds,
+)
 from host_dataset_builder.naip import (
     attach_naip_filename_or_url,
     extract_naip_chip_for_point,
@@ -357,6 +360,54 @@ class CandidateManifestTests(unittest.TestCase):
         selected = spatially_filter_order(candidates, presences, target=2, min_distance_m=800)
         self.assertEqual(selected["candidate_id"].tolist(), ["one", "two"])
         self.assertEqual(selected["nested_rank"].tolist(), [1, 2])
+
+    def test_materialization_replenishment_preserves_domains_and_nesting(self):
+        ranked = pd.DataFrame(
+            {
+                "sample_id": [f"background_{index}" for index in range(1, 11)],
+                "source_domain_id": ["A", "B", "A", "B", "C", "A", "B", "C", "A", "B"],
+                "nested_rank": list(range(1, 11)),
+            }
+        )
+        successful = ranked[~ranked["sample_id"].isin({"background_1", "background_4"})]
+        selections, diagnostics = select_domain_replenished_backgrounds(
+            ranked,
+            successful,
+            targets=[4, 7],
+        )
+
+        self.assertEqual(len(selections[4]), 4)
+        self.assertEqual(len(selections[7]), 7)
+        self.assertTrue(set(selections[4]["sample_id"]) < set(selections[7]["sample_id"]))
+        self.assertEqual(
+            selections[4]["source_domain_id"].value_counts().to_dict(),
+            {"A": 2, "B": 2},
+        )
+        self.assertEqual(diagnostics[4]["intended_vs_actual_domain_total_variation"], 0.0)
+        self.assertEqual(diagnostics[7]["remaining_domain_deficit_count"], 0)
+
+    def test_materialization_replenishment_reports_irreducible_domain_loss(self):
+        ranked = pd.DataFrame(
+            {
+                "sample_id": [f"background_{index}" for index in range(1, 7)],
+                "source_domain_id": ["rare", "rare", "common", "common", "common", "common"],
+                "nested_rank": list(range(1, 7)),
+            }
+        )
+        successful = ranked[ranked["sample_id"] != "background_2"]
+        selections, diagnostics = select_domain_replenished_backgrounds(
+            ranked,
+            successful,
+            targets=[4],
+        )
+
+        self.assertEqual(len(selections[4]), 4)
+        self.assertEqual(diagnostics[4]["domain_capacity_shortfall_count"], 1)
+        self.assertEqual(diagnostics[4]["remaining_domain_deficit_count"], 1)
+        self.assertAlmostEqual(
+            diagnostics[4]["intended_vs_actual_domain_total_variation"],
+            0.25,
+        )
 
 
 class StrictChipSourceTests(unittest.TestCase):
