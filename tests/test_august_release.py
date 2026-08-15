@@ -29,7 +29,7 @@ from august2026_run_final_model_acceptance import (
     run_command_step,
 )
 from august2026_release_evidence import assemble_release_evidence
-from august2026_summarize_experiments import sha256
+from august2026_summarize_experiments import read_json, sha256
 from august2026_validate_mosaics import validate_mosaics
 from hazel_august2026.validate_submission_gate import (
     validate_bundle,
@@ -1071,6 +1071,7 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                             "status": "complete", "production_ready": True,
                             "host": host, "region": region, "product": product,
                             "expected_score_space": "raw_sigmoid_probability",
+                            "expected_tile_count": 1,
                             "tile_manifest": str(tile_manifest),
                             "tile_manifest_sha256": sha256(tile_manifest),
                             "tile_output_qa": str(tile_qa),
@@ -1127,6 +1128,51 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                         "mosaic_qa_summary_sha256": sha256(path),
                     }
                 )
+            inference_by_key = {
+                (read_json(path)["host"], read_json(path)["product"]): path
+                for path in inference
+            }
+            inference_submission = root / "submissions" / "inference.tsv"
+            inference_submission.parent.mkdir(parents=True)
+            inference_rows = []
+            for index, ((host, product), path) in enumerate(
+                sorted(inference_by_key.items())
+            ):
+                payload = read_json(path)
+                inference_rows.append(
+                    {
+                        "host": host, "region": payload["region"],
+                        "product": product, "array_job_id": 1000 + index,
+                        "qa_job_id": 2000 + index,
+                        "tile_manifest_sha256": payload["tile_manifest_sha256"],
+                        "production_registry_sha256": sha256(registry),
+                        "bundle_metadata_sha256": sha256(bundle), "dry_run": 0,
+                    }
+                )
+            pd.DataFrame(inference_rows).to_csv(
+                inference_submission, sep="\t", index=False
+            )
+            mosaic_submission = root / "submissions" / "mosaics.tsv"
+            mosaic_rows = []
+            for index, host in enumerate(hosts):
+                deterministic = inference_by_key[(host, "deterministic")]
+                uncertainty = inference_by_key[(host, "uncertainty")]
+                deterministic_payload = read_json(deterministic)
+                mosaic_rows.append(
+                    {
+                        "host": host, "region": deterministic_payload["region"],
+                        "mosaic_array_job_id": 3000 + index,
+                        "qa_job_id": 4000 + index, "expected_input_count": 1,
+                        "deterministic_qa_summary": str(deterministic),
+                        "deterministic_qa_sha256": sha256(deterministic),
+                        "uncertainty_qa_summary": str(uncertainty),
+                        "uncertainty_qa_sha256": sha256(uncertainty),
+                        "dry_run": 0,
+                    }
+                )
+            pd.DataFrame(mosaic_rows).to_csv(
+                mosaic_submission, sep="\t", index=False
+            )
             review_spec = root / "review_spec.json"
             write_json(review_spec, {"reviewer": "test"})
             visual = root / "visual.json"
@@ -1154,7 +1200,9 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             hann = root / "HANN_RESULTS.md"
             hann.write_text("validated Hann results\n", encoding="utf-8")
             result = assemble_release_evidence(
-                acceptance, registry, bundle, provenance, attrition, inference, mosaics,
+                acceptance, registry, bundle,
+                [inference_submission, mosaic_submission],
+                provenance, attrition, inference, mosaics,
                 visual, correlation, hann, root / "release",
             )
             self.assertTrue(result["production_ready_for_collaborator_review"])
@@ -1170,6 +1218,7 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                     "configured_exact_overlap_candidate_evidence",
                     "hazel_bundle_file", "fixed_scale_quickview",
                     "native_mosaic_parity_summary", "native_mosaic_parity_detail",
+                    "hazel_submission_log",
                 }.issubset(set(artifact_index["category"]))
             )
             self.assertEqual(

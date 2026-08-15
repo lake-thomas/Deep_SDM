@@ -360,10 +360,128 @@ def _index_artifact_batch_roots(
                 )
 
 
+def _job_id_is_real(value) -> bool:
+    if pd.isna(value):
+        return False
+    text = str(value).strip()
+    return bool(text) and text not in {
+        "DRY_RUN", "SUBMISSION_FAILED", "MOSAIC_SUBMISSION_FAILED",
+        "QA_SUBMISSION_FAILED", "NOT_SUBMITTED",
+    }
+
+
+def _index_hazel_submission_chain(
+    submission_log_paths: list[Path],
+    production_registry_path: Path,
+    hazel_bundle_metadata_path: Path,
+    inference_by_key: dict,
+    inference_paths_by_key: dict,
+    rows: list[dict],
+    failures: list[str],
+) -> None:
+    expected_inference = {(host, product) for host in HOSTS for product in PRODUCTS}
+    expected_mosaics = set(HOSTS)
+    observed_inference = set()
+    observed_mosaics = set()
+    registry_hash = sha256(production_registry_path)
+    bundle_hash = sha256(hazel_bundle_metadata_path)
+    for path in submission_log_paths:
+        if not _verified_index(
+            rows, failures, "hazel_submission_log", path,
+            failure_label=f"hazel_submission_log:{path.name}",
+        ):
+            continue
+        frame = pd.read_csv(path, sep="\t", low_memory=False)
+        if frame.empty:
+            failures.append(f"hazel_submission_empty:{path.name}")
+            continue
+        if {"array_job_id", "qa_job_id", "product"}.issubset(frame.columns):
+            required = {
+                "host", "region", "product", "array_job_id", "qa_job_id",
+                "tile_manifest_sha256", "production_registry_sha256",
+                "bundle_metadata_sha256", "dry_run",
+            }
+            if not required.issubset(frame.columns):
+                failures.append(f"hazel_inference_submission_columns:{path.name}")
+                continue
+            for record in frame.to_dict("records"):
+                key = (record.get("host"), record.get("product"))
+                if key in observed_inference:
+                    failures.append(f"duplicate_hazel_inference_submission:{key}")
+                observed_inference.add(key)
+                evidence = inference_by_key.get(key) or {}
+                if int(record.get("dry_run", 1)) != 0:
+                    failures.append(f"hazel_inference_dry_run:{key}")
+                if not _job_id_is_real(record.get("array_job_id")) or not _job_id_is_real(
+                    record.get("qa_job_id")
+                ):
+                    failures.append(f"hazel_inference_job_id:{key}")
+                if record.get("region") != evidence.get("region"):
+                    failures.append(f"hazel_inference_region:{key}")
+                if record.get("tile_manifest_sha256") != evidence.get(
+                    "tile_manifest_sha256"
+                ):
+                    failures.append(f"hazel_inference_manifest_hash:{key}")
+                if record.get("production_registry_sha256") != registry_hash:
+                    failures.append(f"hazel_inference_registry_hash:{key}")
+                if record.get("bundle_metadata_sha256") != bundle_hash:
+                    failures.append(f"hazel_inference_bundle_hash:{key}")
+        elif {"mosaic_array_job_id", "qa_job_id"}.issubset(frame.columns):
+            required = {
+                "host", "region", "mosaic_array_job_id", "qa_job_id",
+                "expected_input_count", "deterministic_qa_summary",
+                "deterministic_qa_sha256", "uncertainty_qa_summary",
+                "uncertainty_qa_sha256", "dry_run",
+            }
+            if not required.issubset(frame.columns):
+                failures.append(f"hazel_mosaic_submission_columns:{path.name}")
+                continue
+            for record in frame.to_dict("records"):
+                host = record.get("host")
+                if host in observed_mosaics:
+                    failures.append(f"duplicate_hazel_mosaic_submission:{host}")
+                observed_mosaics.add(host)
+                if int(record.get("dry_run", 1)) != 0:
+                    failures.append(f"hazel_mosaic_dry_run:{host}")
+                if not _job_id_is_real(
+                    record.get("mosaic_array_job_id")
+                ) or not _job_id_is_real(record.get("qa_job_id")):
+                    failures.append(f"hazel_mosaic_job_id:{host}")
+                expected_count = None
+                for product, path_key, hash_key in (
+                    ("deterministic", "deterministic_qa_summary", "deterministic_qa_sha256"),
+                    ("uncertainty", "uncertainty_qa_summary", "uncertainty_qa_sha256"),
+                ):
+                    key = (host, product)
+                    expected_path = inference_paths_by_key.get(key)
+                    supplied_path = Path(str(record.get(path_key, "")))
+                    if expected_path is None or supplied_path.resolve() != expected_path.resolve():
+                        failures.append(f"hazel_mosaic_qa_path:{host}:{product}")
+                    elif record.get(hash_key) != sha256(expected_path):
+                        failures.append(f"hazel_mosaic_qa_hash:{host}:{product}")
+                    evidence = inference_by_key.get(key) or {}
+                    if record.get("region") != evidence.get("region"):
+                        failures.append(f"hazel_mosaic_region:{host}:{product}")
+                    count = evidence.get("expected_tile_count")
+                    if expected_count is None:
+                        expected_count = count
+                    elif count != expected_count:
+                        failures.append(f"hazel_mosaic_product_count:{host}")
+                if int(record.get("expected_input_count", -1)) != expected_count:
+                    failures.append(f"hazel_mosaic_expected_count:{host}")
+        else:
+            failures.append(f"hazel_submission_schema:{path.name}")
+    if observed_inference != expected_inference:
+        failures.append("hazel_inference_submission_host_product_set")
+    if observed_mosaics != expected_mosaics:
+        failures.append("hazel_mosaic_submission_host_set")
+
+
 def assemble_release_evidence(
     final_acceptance_path: Path,
     production_registry_path: Path,
     hazel_bundle_metadata_path: Path,
+    hazel_submission_log_paths: list[Path],
     candidate_provenance_paths: list[Path],
     attrition_paths: list[Path],
     inference_qa_paths: list[Path],
@@ -492,12 +610,14 @@ def assemble_release_evidence(
         failures.append("attrition_host_set")
 
     inference_by_key = {}
+    inference_paths_by_key = {}
     for path in inference_qa_paths:
         payload = read_json(path)
         key = (payload.get("host"), payload.get("product"))
         if key in inference_by_key:
             failures.append(f"duplicate_inference_qa:{key}")
         inference_by_key[key] = payload
+        inference_paths_by_key[key] = path
         host, product = key
         if payload.get("status") != "complete" or not payload.get("production_ready"):
             failures.append(f"inference_qa_not_ready:{host}:{product}")
@@ -578,6 +698,16 @@ def assemble_release_evidence(
             )
     if set(mosaic_by_host) != HOSTS:
         failures.append("mosaic_qa_host_set")
+
+    _index_hazel_submission_chain(
+        hazel_submission_log_paths,
+        production_registry_path,
+        hazel_bundle_metadata_path,
+        inference_by_key,
+        inference_paths_by_key,
+        index_rows,
+        failures,
+    )
 
     visual = read_json(visual_review_path)
     if visual.get("status") != "complete" or not visual.get(
@@ -752,6 +882,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--final-acceptance", type=Path, required=True)
     parser.add_argument("--production-registry", type=Path, required=True)
     parser.add_argument("--hazel-bundle-metadata", type=Path, required=True)
+    parser.add_argument("--hazel-submission-log", type=Path, action="append", required=True)
     parser.add_argument("--candidate-provenance-summary", type=Path, action="append", required=True)
     parser.add_argument("--attrition-summary", type=Path, action="append", required=True)
     parser.add_argument("--inference-qa-summary", type=Path, action="append", required=True)
@@ -767,6 +898,7 @@ def main() -> None:
     args = parse_args()
     required = [
         args.final_acceptance, args.production_registry, args.hazel_bundle_metadata,
+        *args.hazel_submission_log,
         args.visual_review, args.aligned_correlation, args.hann_results,
         *args.candidate_provenance_summary, *args.attrition_summary,
         *args.inference_qa_summary, *args.mosaic_qa_summary,
@@ -776,6 +908,7 @@ def main() -> None:
         raise FileNotFoundError(f"Missing release evidence inputs: {missing}")
     payload = assemble_release_evidence(
         args.final_acceptance, args.production_registry, args.hazel_bundle_metadata,
+        args.hazel_submission_log,
         args.candidate_provenance_summary, args.attrition_summary,
         args.inference_qa_summary, args.mosaic_qa_summary,
         args.visual_review, args.aligned_correlation, args.hann_results,
