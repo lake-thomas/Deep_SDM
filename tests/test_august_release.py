@@ -11,6 +11,8 @@ import rasterio
 from rasterio.transform import from_origin
 
 from august2026_record_visual_review import HOSTS, REVIEW_TARGETS, record_visual_review
+from august2026_native_mosaic_parity import run_parity, stable_tile_sample
+from august2026_render_fixed_quickviews import read_aligned_reference
 from august2026_release_evidence import assemble_release_evidence
 from august2026_summarize_experiments import sha256
 from august2026_validate_mosaics import validate_mosaics
@@ -22,6 +24,120 @@ def write_json(path: Path, payload: dict) -> None:
 
 
 class AugustVisualReviewTests(unittest.TestCase):
+    def test_aligned_june_reference_keeps_nonoverlap_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            prediction = root / "august.tif"
+            reference = root / "june.tif"
+            with rasterio.open(
+                prediction, "w", driver="GTiff", width=4, height=2, count=1,
+                dtype="float32", crs="EPSG:5070", transform=from_origin(0, 2, 1, 1),
+                nodata=-9999,
+            ) as target:
+                target.write(np.full((2, 4), 0.4, dtype="float32"), 1)
+            with rasterio.open(
+                reference, "w", driver="GTiff", width=2, height=2, count=1,
+                dtype="float32", crs="EPSG:5070", transform=from_origin(0, 2, 1, 1),
+                nodata=-9999,
+            ) as target:
+                target.write(np.full((2, 2), 0.2, dtype="float32"), 1)
+            aligned = read_aligned_reference(reference, prediction, 4, 2)
+            self.assertTrue(np.allclose(aligned[:, :2], 0.2))
+            self.assertTrue(np.isnan(aligned[:, 2:]).all())
+
+    def test_native_mosaic_parity_is_stable_and_checks_pointwise_differences(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            tile_dir = root / "tiles"
+            prediction_dir = root / "prediction"
+            uncertainty_dir = root / "uncertainty"
+            tile_dir.mkdir()
+            prediction_dir.mkdir()
+            uncertainty_dir.mkdir()
+            tile_paths = []
+            for index, value in enumerate((0.2, 0.7)):
+                tile = tile_dir / f"tile_ne_17_{index:03d}.tif"
+                tile_paths.append(tile)
+                transform = from_origin(index * 4, 4, 1, 1)
+                for path, layer_value in (
+                    (tile, value),
+                    (prediction_dir / f"{tile.stem}_prediction.tif", value),
+                    (uncertainty_dir / f"{tile.stem}_uncertainty.tif", 0.03),
+                ):
+                    with rasterio.open(
+                        path, "w", driver="GTiff", width=4, height=4, count=1,
+                        dtype="float32", crs="EPSG:5070", transform=transform,
+                        nodata=-9999,
+                    ) as target:
+                        target.write(np.full((4, 4), layer_value, dtype="float32"), 1)
+            manifest = root / "tiles.txt"
+            manifest.write_text("\n".join(map(str, reversed(tile_paths))) + "\n", encoding="utf-8")
+            self.assertEqual(
+                stable_tile_sample(tile_paths, 2),
+                stable_tile_sample(list(reversed(tile_paths)), 2),
+            )
+            prediction_mosaic = root / "prediction_mosaic.tif"
+            uncertainty_mosaic = root / "uncertainty_mosaic.tif"
+            for path, left, right in (
+                (prediction_mosaic, 0.2, 0.7),
+                (uncertainty_mosaic, 0.03, 0.03),
+            ):
+                values = np.hstack(
+                    [np.full((4, 4), left, dtype="float32"),
+                     np.full((4, 4), right, dtype="float32")]
+                )
+                with rasterio.open(
+                    path, "w", driver="GTiff", width=8, height=4, count=1,
+                    dtype="float32", crs="EPSG:5070", transform=from_origin(0, 4, 1, 1),
+                    nodata=-9999,
+                ) as target:
+                    target.write(values, 1)
+            result = run_parity(
+                manifest, prediction_dir, uncertainty_dir,
+                prediction_mosaic, uncertainty_mosaic,
+                "ailanthus_altissima", "east", root / "parity",
+            )
+            self.assertTrue(result["production_ready"])
+            self.assertEqual(result["failure_count"], 0)
+            self.assertEqual(
+                result["prediction"]["mean_pointwise_absolute_difference"], 0.0
+            )
+            self.assertTrue((root / "parity" / "COMPLETED").is_file())
+
+    def test_native_mosaic_parity_rejects_large_mosaic_shift(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            tile = root / "tile_ne_17_000.tif"
+            prediction_dir = root / "prediction"
+            uncertainty_dir = root / "uncertainty"
+            prediction_dir.mkdir()
+            uncertainty_dir.mkdir()
+            manifest = root / "tiles.txt"
+            manifest.write_text(f"{tile}\n", encoding="utf-8")
+            transform = from_origin(0, 4, 1, 1)
+            rasters = (
+                (tile, 0.2),
+                (prediction_dir / f"{tile.stem}_prediction.tif", 0.2),
+                (uncertainty_dir / f"{tile.stem}_uncertainty.tif", 0.03),
+                (root / "prediction_mosaic.tif", 0.3),
+                (root / "uncertainty_mosaic.tif", 0.03),
+            )
+            for path, value in rasters:
+                with rasterio.open(
+                    path, "w", driver="GTiff", width=4, height=4, count=1,
+                    dtype="float32", crs="EPSG:5070", transform=transform,
+                    nodata=-9999,
+                ) as target:
+                    target.write(np.full((4, 4), value, dtype="float32"), 1)
+            result = run_parity(
+                manifest, prediction_dir, uncertainty_dir,
+                root / "prediction_mosaic.tif", root / "uncertainty_mosaic.tif",
+                "ailanthus_altissima", "east", root / "parity",
+            )
+            self.assertFalse(result["production_ready"])
+            self.assertIn("prediction_mean_absolute_difference", result["failures"])
+            self.assertTrue((root / "parity" / "REJECTED").is_file())
+
     def test_mosaic_validation_checks_status_counts_ranges_and_quickview_hashes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -53,25 +169,45 @@ class AugustVisualReviewTests(unittest.TestCase):
             for label in (
                 "probability_transparent", "probability_framed",
                 "uncertainty_transparent", "uncertainty_framed",
+                "support_transparent", "support_framed",
+                "difference_from_june_transparent", "difference_from_june_framed",
             ):
                 path = root / f"{label}.png"
                 path.write_bytes(label.encode())
                 quick_outputs[label] = str(path)
             quickview = root / "quickview_summary.json"
+            reference = root / "june_reference.tif"
+            reference.write_bytes(b"reference")
             write_json(
                 quickview,
                 {
                     "status": "complete", "host": "ailanthus_altissima", "region": "east",
                     "mask_definition": "count > 0 AND finite(product)",
                     "prediction_scale": [0.0, 1.0], "uncertainty_scale": [0.0, 0.1],
+                    "support_scale": [0.0, 16.0],
+                    "difference_from_june_scale": [-0.5, 0.5],
+                    "reference_prediction_sha256": sha256(reference),
                     "prediction_sha256": sha256(products["prediction"]),
                     "uncertainty_sha256": sha256(products["uncertainty"]),
                     "count_sha256": sha256(products["count"]), "outputs": quick_outputs,
                 },
             )
+            parity_detail = root / "parity.csv"
+            parity_detail.write_text("tile,layer\nexample,prediction\n", encoding="utf-8")
+            parity = root / "parity.json"
+            write_json(
+                parity,
+                {
+                    "status": "complete", "production_ready": True,
+                    "host": "ailanthus_altissima", "region": "east",
+                    "prediction_mosaic_sha256": sha256(products["prediction"]),
+                    "uncertainty_mosaic_sha256": sha256(products["uncertainty"]),
+                    "detail": str(parity_detail), "detail_sha256": sha256(parity_detail),
+                },
+            )
             result = validate_mosaics(
                 products["prediction"], products["uncertainty"], products["count"],
-                quickview, expected_input_count=12, target_resolution=256,
+                quickview, parity, expected_input_count=12, target_resolution=256,
             )
             self.assertTrue(result["production_ready_for_visual_review"])
             self.assertEqual(result["host"], "ailanthus_altissima")
@@ -87,6 +223,8 @@ class AugustVisualReviewTests(unittest.TestCase):
                 for label in (
                     "probability_transparent", "probability_framed",
                     "uncertainty_transparent", "uncertainty_framed",
+                    "support_transparent", "support_framed",
+                    "difference_from_june_transparent", "difference_from_june_framed",
                 ):
                     image = quick_root / f"{label}.png"
                     image.parent.mkdir(parents=True, exist_ok=True)
@@ -228,6 +366,8 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             bundle = root / "bundle"
             bundle.mkdir()
             (bundle / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            june_reference = root / "june_reference.tif"
+            june_reference.write_bytes(b"june reference")
             submission_log = root / "mosaic_submission.tsv"
             script = (
                 Path(__file__).resolve().parents[1]
@@ -247,6 +387,7 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                 [
                     "bash", str(script), "ailanthus_altissima",
                     "east_of_mississippi", str(tile_manifest), str(bundle), "12",
+                    str(june_reference),
                 ],
                 check=True, capture_output=True, text=True, env=environment,
             )
@@ -626,12 +767,29 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                     raster.write_bytes(f"{host}-{product}".encode())
                     products[product] = {"path": str(raster), "sha256": sha256(raster)}
                 quickview_outputs = {}
-                for label in ("probability_framed", "uncertainty_framed"):
+                for label in (
+                    "probability_transparent", "probability_framed",
+                    "uncertainty_transparent", "uncertainty_framed",
+                    "support_transparent", "support_framed",
+                    "difference_from_june_transparent", "difference_from_june_framed",
+                ):
                     quickview_image = root / "mosaics" / host / f"{label}.png"
                     quickview_image.write_bytes(f"{host}-{label}".encode())
                     quickview_outputs[label] = str(quickview_image)
                 quickview_summary = root / "mosaics" / host / "quickview_summary.json"
                 write_json(quickview_summary, {"status": "complete", "outputs": quickview_outputs})
+                parity_detail = root / "mosaics" / host / "native_mosaic_parity.csv"
+                parity_detail.write_text("tile,layer\nexample,prediction\n", encoding="utf-8")
+                parity_summary = root / "mosaics" / host / "native_mosaic_parity.json"
+                write_json(
+                    parity_summary,
+                    {
+                        "status": "complete", "production_ready": True,
+                        "host": host, "region": region,
+                        "detail": str(parity_detail),
+                        "detail_sha256": sha256(parity_detail),
+                    },
+                )
                 path = root / "mosaics" / host / "qa.json"
                 payload = {
                     "status": "complete",
@@ -639,6 +797,8 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                     "host": host, "region": region, "products": products,
                     "quickview_summary": str(quickview_summary),
                     "quickview_summary_sha256": sha256(quickview_summary),
+                    "native_mosaic_parity_summary": str(parity_summary),
+                    "native_mosaic_parity_summary_sha256": sha256(parity_summary),
                 }
                 write_json(path, payload)
                 mosaics.append(path)
@@ -691,6 +851,7 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                     "raw_matched_boundary_candidate_evidence",
                     "configured_exact_overlap_candidate_evidence",
                     "hazel_bundle_file", "fixed_scale_quickview",
+                    "native_mosaic_parity_summary", "native_mosaic_parity_detail",
                 }.issubset(set(artifact_index["category"]))
             )
             self.assertEqual(

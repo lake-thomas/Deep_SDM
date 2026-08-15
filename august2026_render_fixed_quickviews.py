@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render fixed-scale, count-masked probability and uncertainty quickviews."""
+"""Render fixed-scale probability, uncertainty, support, and change quickviews."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import numpy as np
 import rasterio
 from PIL import Image
 from rasterio.enums import Resampling
+from rasterio.vrt import WarpedVRT
 
 from august2026_summarize_experiments import sha256, write_json_atomic
 
@@ -25,6 +26,16 @@ UNCERTAINTY_COLORS = [
     (255, 255, 255), (224, 243, 219), (168, 221, 181),
     (67, 162, 202), (8, 104, 172), (3, 19, 43),
 ]
+SUPPORT_STOPS = np.asarray([0.0, 1.0, 2.0, 4.0, 8.0, 16.0])
+SUPPORT_COLORS = [
+    (255, 255, 255), (240, 249, 232), (186, 228, 188),
+    (123, 204, 196), (67, 162, 202), (8, 104, 172),
+]
+DIFFERENCE_STOPS = np.asarray([-0.50, -0.25, -0.10, 0.0, 0.10, 0.25, 0.50])
+DIFFERENCE_COLORS = [
+    (103, 0, 31), (178, 24, 43), (239, 138, 98), (247, 247, 247),
+    (103, 169, 207), (33, 102, 172), (5, 48, 97),
+]
 
 
 def read_preview(path: Path, width: int, height: int, resampling) -> np.ndarray:
@@ -34,6 +45,34 @@ def read_preview(path: Path, width: int, height: int, resampling) -> np.ndarray:
         ).astype(np.float32)
         if source.nodata is not None:
             values[values == source.nodata] = np.nan
+    return values
+
+
+def read_aligned_reference(
+    path: Path,
+    prediction_path: Path,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    with rasterio.open(prediction_path) as prediction, rasterio.open(path) as source:
+        with WarpedVRT(
+            source,
+            crs=prediction.crs,
+            transform=prediction.transform,
+            width=prediction.width,
+            height=prediction.height,
+            resampling=Resampling.bilinear,
+            src_nodata=source.nodata,
+            nodata=np.nan,
+            dtype="float32",
+            init_dest_nodata=True,
+        ) as aligned:
+            values = aligned.read(
+                1,
+                out_shape=(height, width),
+                resampling=Resampling.bilinear,
+            ).astype(np.float32)
+            values[~np.isfinite(values)] = np.nan
     return values
 
 
@@ -61,6 +100,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prediction", type=Path, required=True)
     parser.add_argument("--uncertainty", type=Path, required=True)
     parser.add_argument("--count", type=Path, required=True)
+    parser.add_argument("--reference-prediction", type=Path, required=True)
     parser.add_argument("--host", required=True)
     parser.add_argument("--region", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -70,7 +110,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    for path in (args.prediction, args.uncertainty, args.count):
+    for path in (
+        args.prediction,
+        args.uncertainty,
+        args.count,
+        args.reference_prediction,
+    ):
         if not path.is_file():
             raise FileNotFoundError(path)
     if args.output_dir.exists():
@@ -91,9 +136,14 @@ def main() -> None:
     prediction = read_preview(args.prediction, width, height, Resampling.bilinear)
     uncertainty = read_preview(args.uncertainty, width, height, Resampling.bilinear)
     count = read_preview(args.count, width, height, Resampling.nearest)
+    reference = read_aligned_reference(
+        args.reference_prediction, args.prediction, width, height
+    )
     support = np.isfinite(count) & (count > 0)
     prediction_valid = support & np.isfinite(prediction)
     uncertainty_valid = support & np.isfinite(uncertainty)
+    reference_valid = support & np.isfinite(prediction) & np.isfinite(reference)
+    difference = prediction - reference
     prediction_image = rgba(
         np.clip(np.nan_to_num(prediction, nan=0.0), 0, 1),
         PROBABILITY_STOPS,
@@ -106,12 +156,26 @@ def main() -> None:
         UNCERTAINTY_COLORS,
         uncertainty_valid,
     )
+    support_image = rgba(
+        np.clip(np.nan_to_num(count, nan=0.0), 0, 16),
+        SUPPORT_STOPS,
+        SUPPORT_COLORS,
+        support,
+    )
+    difference_image = rgba(
+        np.clip(np.nan_to_num(difference, nan=0.0), -0.50, 0.50),
+        DIFFERENCE_STOPS,
+        DIFFERENCE_COLORS,
+        reference_valid,
+    )
     args.output_dir.mkdir(parents=True)
     stem = f"{args.host}_{args.region}"
     outputs = {}
     for label, image in (
         ("probability", prediction_image),
         ("uncertainty", uncertainty_image),
+        ("support", support_image),
+        ("difference_from_june", difference_image),
     ):
         for frame in ("transparent", "framed"):
             path = args.output_dir / f"{stem}_{label}_fixed_scale_{frame}.png"
@@ -128,13 +192,18 @@ def main() -> None:
         "uncertainty_sha256": sha256(args.uncertainty),
         "count": str(args.count.resolve()),
         "count_sha256": sha256(args.count),
+        "reference_prediction": str(args.reference_prediction.resolve()),
+        "reference_prediction_sha256": sha256(args.reference_prediction),
         "grid": grid,
         "mask_definition": "count > 0 AND finite(product)",
         "prediction_scale": [0.0, 1.0],
         "uncertainty_scale": [0.0, 0.10],
+        "support_scale": [0.0, 16.0],
+        "difference_from_june_scale": [-0.50, 0.50],
         "preview_supported_pixels": int(support.sum()),
         "preview_prediction_valid_pixels": int(prediction_valid.sum()),
         "preview_uncertainty_valid_pixels": int(uncertainty_valid.sum()),
+        "preview_difference_valid_pixels": int(reference_valid.sum()),
         "preview_uncertainty_above_display_max_fraction": (
             float((finite_uncertainty > 0.10).mean())
             if len(finite_uncertainty)
@@ -144,6 +213,8 @@ def main() -> None:
         "visual_review_targets": [
             "UTM seams", "state/acquisition boundaries", "east-west striations",
             "NAIP tile footprints", "unexpected empty coverage", "ecological plausibility",
+            "support plausibility", "August-minus-June change plausibility",
+            "known NY, NY-PA, CA-OR, southern Oregon, and Gold Beach domains",
         ],
     }
     write_json_atomic(args.output_dir / "quickview_summary.json", payload)

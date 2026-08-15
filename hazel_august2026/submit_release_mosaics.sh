@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -ne 5 ]]; then
-  echo "Usage: $0 <host> <region> <tile_manifest> <bundle_root> <expected_tile_count>" >&2
+if [[ $# -ne 6 ]]; then
+  echo "Usage: $0 <host> <region> <tile_manifest> <bundle_root> <expected_tile_count> <june_reference_prediction>" >&2
   exit 2
 fi
 HOST_SLUG="$1"
@@ -9,6 +9,7 @@ REGION="$2"
 TILE_MANIFEST="$3"
 BUNDLE_ROOT="$4"
 EXPECTED_INPUT_COUNT="$5"
+JUNE_REFERENCE_PREDICTION="$6"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HPC_ROOT="${HPC_ROOT:-/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM}"
 ACTIVE_OUTPUT_ROOT="${ACTIVE_OUTPUT_ROOT:-/share/rkmeente/talake2/host_sdm_august2026/production_model_inference_august2026}"
@@ -16,8 +17,8 @@ DURABLE_OUTPUT_ROOT="${DURABLE_OUTPUT_ROOT:-${HPC_ROOT}/Outputs_Host_NAIP_SDMs/p
 MAX_CONCURRENT="${MAX_CONCURRENT:-1}"
 DRY_RUN="${DRY_RUN:-1}"
 SUBMISSION_LOG="${SUBMISSION_LOG:-${DURABLE_OUTPUT_ROOT}/_submission_records/${REGION}_${HOST_SLUG}_mosaic_array.tsv}"
-if [[ ! -s "${TILE_MANIFEST}" || ! -s "${BUNDLE_ROOT}/COMPLETED" ]]; then
-  echo "Tile manifest or frozen bundle is incomplete" >&2
+if [[ ! -s "${TILE_MANIFEST}" || ! -s "${BUNDLE_ROOT}/COMPLETED" || ! -s "${JUNE_REFERENCE_PREDICTION}" ]]; then
+  echo "Tile manifest, frozen bundle, or June reference prediction is incomplete" >&2
   exit 3
 fi
 if [[ ! "${EXPECTED_INPUT_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
@@ -53,7 +54,7 @@ if [[ "${DRY_RUN}" == "1" ]]; then
 else
   array_job="$("${array_command[@]}")"
   if ! qa_job="$(sbatch --parsable --dependency="afterok:${array_job}" \
-      --export=ALL,HOST_SLUG="${HOST_SLUG}",REGION="${REGION}",EXPECTED_INPUT_COUNT="${EXPECTED_INPUT_COUNT}",BUNDLE_ROOT="${BUNDLE_ROOT}",MOSAIC_OUTPUT_ROOT="${DURABLE_OUTPUT_ROOT}" \
+      --export=ALL,HOST_SLUG="${HOST_SLUG}",REGION="${REGION}",EXPECTED_INPUT_COUNT="${EXPECTED_INPUT_COUNT}",TILE_MANIFEST="${TILE_MANIFEST}",JUNE_REFERENCE_PREDICTION="${JUNE_REFERENCE_PREDICTION}",BUNDLE_ROOT="${BUNDLE_ROOT}",ACTIVE_OUTPUT_ROOT="${ACTIVE_OUTPUT_ROOT}",MOSAIC_OUTPUT_ROOT="${DURABLE_OUTPUT_ROOT}" \
       "${SCRIPT_DIR}/quickviews_and_mosaic_qa.sbatch")"; then
     qa_job=QA_SUBMISSION_FAILED
     printf 'submitted_at\thost\tregion\tmosaic_array_job_id\tqa_job_id\tarray_spec\texpected_input_count\tdry_run\n' > "${SUBMISSION_LOG}"

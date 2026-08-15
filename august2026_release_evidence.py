@@ -553,6 +553,27 @@ def assemble_release_evidence(
                     failure_label=f"fixed_scale_quickview:{host}:{label}", host=host,
                     region=payload.get("region"),
                 )
+        parity_path = _payload_pointer(
+            index_rows, failures, payload, path, "native_mosaic_parity_summary",
+            "native_mosaic_parity_summary", host=host,
+            region=payload.get("region"),
+        )
+        if parity_path is not None:
+            parity = read_json(parity_path)
+            if parity.get("status") != "complete" or not parity.get(
+                "production_ready"
+            ):
+                failures.append(f"native_mosaic_parity_not_ready:{host}")
+            if (
+                parity.get("host") != host
+                or parity.get("region") != payload.get("region")
+            ):
+                failures.append(f"native_mosaic_parity_identity:{host}")
+            _payload_pointer(
+                index_rows, failures, parity, parity_path, "detail",
+                "native_mosaic_parity_detail", host=host,
+                region=payload.get("region"),
+            )
     if set(mosaic_by_host) != HOSTS:
         failures.append("mosaic_qa_host_set")
 

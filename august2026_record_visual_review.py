@@ -26,6 +26,10 @@ REVIEW_TARGETS = {
     "unexpected_empty_coverage",
     "ecological_plausibility",
     "uncertainty_plausibility",
+    "support_plausibility",
+    "difference_from_june_plausibility",
+    "native_mosaic_parity",
+    "known_diagnostic_domains",
 }
 PASS_STATES = {"pass", "pass_with_note"}
 
@@ -108,6 +112,8 @@ def record_visual_review(
         if set(image_records) != {
             "probability_transparent", "probability_framed",
             "uncertainty_transparent", "uncertainty_framed",
+            "support_transparent", "support_framed",
+            "difference_from_june_transparent", "difference_from_june_framed",
         }:
             host_failures.append("quickview_image_set")
         records.append(
@@ -143,8 +149,10 @@ def record_visual_review(
         "failures": failures,
         "reviews": records,
         "interpretation": (
-            "Visual approval records inspection of fixed-scale probability and uncertainty "
-            "quickviews. It complements, but does not replace, tiled and mosaic raster QA."
+            "Visual approval records inspection of fixed-scale probability, uncertainty, "
+            "support, and August-minus-June quickviews, including the known NY, NY-PA, "
+            "CA-OR, southern Oregon, and Gold Beach domains where applicable. It "
+            "complements, but does not replace, tiled, parity, and mosaic raster QA."
         ),
     }
     write_json_atomic(output_dir / "summary.json", payload)

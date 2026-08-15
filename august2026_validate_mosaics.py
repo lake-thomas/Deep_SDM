@@ -22,6 +22,7 @@ def validate_mosaics(
     uncertainty: Path,
     count: Path,
     quickview_summary: Path,
+    parity_summary: Path,
     expected_input_count: int,
     target_resolution: float,
 ) -> dict:
@@ -29,6 +30,7 @@ def validate_mosaics(
     products = {}
     reference = None
     quickview = None
+    parity = None
     for label, path in (
         ("prediction", prediction),
         ("uncertainty", uncertainty),
@@ -128,12 +130,44 @@ def validate_mosaics(
             failures.append("quickview_prediction_scale")
         if quickview.get("uncertainty_scale") != [0.0, 0.1]:
             failures.append("quickview_uncertainty_scale")
+        if quickview.get("support_scale") != [0.0, 16.0]:
+            failures.append("quickview_support_scale")
+        if quickview.get("difference_from_june_scale") != [-0.5, 0.5]:
+            failures.append("quickview_difference_scale")
+        if not quickview.get("reference_prediction_sha256"):
+            failures.append("quickview_reference_prediction")
+        expected_outputs = {
+            f"{label}_{frame}"
+            for label in (
+                "probability",
+                "uncertainty",
+                "support",
+                "difference_from_june",
+            )
+            for frame in ("transparent", "framed")
+        }
+        if set((quickview.get("outputs") or {})) != expected_outputs:
+            failures.append("quickview_output_set")
         for path in (quickview.get("outputs") or {}).values():
             if not Path(path).is_file():
                 failures.append("missing_quickview_png")
         for label in ("prediction", "uncertainty", "count"):
             if label in products and quickview.get(f"{label}_sha256") != products[label]["sha256"]:
                 failures.append(f"quickview_{label}_hash")
+    if not parity_summary.is_file():
+        failures.append("missing_native_mosaic_parity")
+    else:
+        parity = read_json(parity_summary)
+        if parity.get("status") != "complete" or not parity.get("production_ready"):
+            failures.append("native_mosaic_parity_status")
+        if quickview and (
+            parity.get("host") != quickview.get("host")
+            or parity.get("region") != quickview.get("region")
+        ):
+            failures.append("native_mosaic_parity_identity")
+        for label in ("prediction", "uncertainty"):
+            if label in products and parity.get(f"{label}_mosaic_sha256") != products[label]["sha256"]:
+                failures.append(f"native_mosaic_parity_{label}_hash")
     return {
         "status": "complete",
         "production_ready_for_visual_review": not failures,
@@ -147,6 +181,10 @@ def validate_mosaics(
         "quickview_summary_sha256": (
             sha256(quickview_summary) if quickview_summary.is_file() else None
         ),
+        "native_mosaic_parity_summary": str(parity_summary.resolve()),
+        "native_mosaic_parity_summary_sha256": (
+            sha256(parity_summary) if parity_summary.is_file() else None
+        ),
         "failure_count": len(failures),
         "failures": failures,
         "visual_review_required": True,
@@ -159,6 +197,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--uncertainty", type=Path, required=True)
     parser.add_argument("--count", type=Path, required=True)
     parser.add_argument("--quickview-summary", type=Path, required=True)
+    parser.add_argument("--parity-summary", type=Path, required=True)
     parser.add_argument("--expected-input-count", type=int, required=True)
     parser.add_argument("--target-resolution", type=float, default=256.0)
     parser.add_argument("--output", type=Path, required=True)
@@ -171,6 +210,7 @@ def main() -> None:
         raise FileExistsError(f"Refusing to replace mosaic QA: {args.output}")
     payload = validate_mosaics(
         args.prediction, args.uncertainty, args.count, args.quickview_summary,
+        args.parity_summary,
         args.expected_input_count, args.target_resolution,
     )
     write_json_atomic(args.output, payload)
