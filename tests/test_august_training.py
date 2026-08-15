@@ -53,6 +53,7 @@ from august2026_loss_screen_evidence import strict_evidence_gate
 from august2026_augmentation_screen import augmentation_combinations, build_config as build_augmentation_config
 from august2026_blockcv import FOLDS, blockcv_name
 from august2026_blockcv_evidence import calibration_recommendation, summarize_values
+from august2026_run_blockcv_acceptance import _reuse_evidence
 from august2026_production_train import production_name
 from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
@@ -1361,6 +1362,39 @@ class AugustExperimentDesignTests(unittest.TestCase):
         group.loc[1:4, "test_platt_calibration_binary_log_loss"] += 0.2
         recommendation = calibration_recommendation(group)
         self.assertEqual(recommendation["calibration_recommendation"], "raw")
+
+    def test_blockcv_acceptance_reuses_only_complete_hash_matched_evidence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            selection = root / "selection.json"
+            training = root / "training.csv"
+            selection.write_text("{}\n", encoding="utf-8")
+            training.write_text("experiment\nexample\n", encoding="utf-8")
+            evidence = root / "evidence"
+            evidence.mkdir()
+            folds = evidence / "blockcv_fold_metrics.csv"
+            hosts = evidence / "blockcv_host_summary.csv"
+            folds.write_text("fold\n1\n", encoding="utf-8")
+            hosts.write_text("host\nexample\n", encoding="utf-8")
+            (evidence / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            summary = {
+                "status": "complete",
+                "production_ready": True,
+                "selection_manifest_sha256": sha256(selection),
+                "training_metrics_sha256": sha256(training),
+                "host_count": 5,
+                "expected_fold_count_per_host": 5,
+                "fold_metrics": str(folds),
+                "host_summary": str(hosts),
+            }
+            (evidence / "summary.json").write_text(
+                json.dumps(summary), encoding="utf-8"
+            )
+            reused = _reuse_evidence(evidence, selection, training)
+            self.assertTrue(reused["production_ready"])
+            training.write_text("experiment\nchanged\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                _reuse_evidence(evidence, selection, training)
 
     def test_production_name_records_recipe_and_score_space(self):
         selection = {
