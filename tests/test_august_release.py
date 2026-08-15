@@ -14,6 +14,7 @@ from august2026_augmentation_screen_evidence import (
     EFFECT_METRICS,
     factorial_effect_contrasts,
 )
+from august2026_batch_artifact_probe import add_tanoak_coastal_comparison
 from august2026_record_visual_review import HOSTS, REVIEW_TARGETS, record_visual_review
 from august2026_native_mosaic_parity import run_parity, stable_tile_sample
 from august2026_render_fixed_quickviews import read_aligned_reference
@@ -281,6 +282,25 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_tanoak_coastal_comparison_is_a_separate_paired_gate(self):
+        frame = pd.DataFrame(
+            {
+                "mid_lon_x": [-124.0, -123.5, -122.5, -122.0],
+                "mid_lon_y": [-124.0, -123.5, -122.5, -122.0],
+                "baseline_did": [0.10, -0.20, 0.03, -0.04],
+                "candidate_did": [0.05, -0.10, 0.02, -0.03],
+            }
+        )
+        result = add_tanoak_coastal_comparison(frame, {"status": "complete"})
+        coastal = result["coastal_west_of_123"]
+        self.assertEqual(coastal["pair_count"], 2)
+        self.assertAlmostEqual(coastal["baseline_absolute_did_mean"], 0.15)
+        self.assertAlmostEqual(coastal["candidate_absolute_did_mean"], 0.075)
+        changed = frame.copy()
+        changed.loc[0, "mid_lon_y"] = -123.9
+        with self.assertRaises(ValueError):
+            add_tanoak_coastal_comparison(changed, {})
+
     def test_augmentation_effects_are_exactly_matched_factorial_contrasts(self):
         rows = []
         for radiometric in (False, True):

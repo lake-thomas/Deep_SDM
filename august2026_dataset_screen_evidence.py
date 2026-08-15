@@ -114,6 +114,7 @@ def load_artifact_rows(
                 raise ValueError(f"Artifact probe/comparison hashes disagree: {candidate_root}")
             signed_ci = comparison["paired_signed_did_reduction_bootstrap_95ci"]
             absolute_ci = comparison["paired_absolute_did_reduction_bootstrap_95ci"]
+            coastal = comparison.get("coastal_west_of_123") or {}
             rows.append(
                 {
                     "experiment": experiment,
@@ -146,6 +147,16 @@ def load_artifact_rows(
                     "artifact_paired_absolute_did_reduction_ci_low": absolute_ci[0],
                     "artifact_paired_absolute_did_reduction_ci_high": absolute_ci[1],
                     "artifact_comparison_status": comparison["comparison_status"],
+                    "artifact_coastal_pair_count": coastal.get("pair_count"),
+                    "artifact_coastal_baseline_absolute_did_mean": coastal.get(
+                        "baseline_absolute_did_mean"
+                    ),
+                    "artifact_coastal_candidate_absolute_did_mean": coastal.get(
+                        "candidate_absolute_did_mean"
+                    ),
+                    "artifact_coastal_paired_absolute_did_reduction_mean": coastal.get(
+                        "paired_absolute_did_reduction_mean"
+                    ),
                     "artifact_signed_reduction_supported": signed_ci[0] > 0,
                     "artifact_absolute_reduction_supported": absolute_ci[0] > 0,
                     "artifact_checkpoint_sha256": comparison[

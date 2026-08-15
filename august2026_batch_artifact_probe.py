@@ -52,6 +52,32 @@ def write_csv_atomic(path: Path, frame: pd.DataFrame) -> None:
     os.replace(partial, path)
 
 
+def add_tanoak_coastal_comparison(
+    comparison_frame: pd.DataFrame,
+    comparison: dict,
+) -> dict:
+    required = {"mid_lon_x", "mid_lon_y"}
+    if not required.issubset(comparison_frame.columns):
+        raise ValueError("Tanoak comparison lacks paired longitude fields")
+    if not np.allclose(
+        comparison_frame["mid_lon_x"],
+        comparison_frame["mid_lon_y"],
+        rtol=0.0,
+        atol=1e-9,
+    ):
+        raise ValueError("Tanoak baseline/candidate pair longitudes changed")
+    coastal_frame = comparison_frame[
+        comparison_frame["mid_lon_x"] <= -123.0
+    ].copy()
+    if coastal_frame.empty:
+        raise ValueError("Tanoak coastal diagnostic contains no pairs")
+    output = dict(comparison)
+    output["coastal_west_of_123"] = paired_comparison(
+        coastal_frame, seed=20260814
+    )
+    return output
+
+
 def current_commit() -> str:
     return subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -295,6 +321,10 @@ def write_candidate_outputs(
     )
     comparison_frame = exact_pair_merge(baseline, metrics)
     comparison = paired_comparison(comparison_frame)
+    if diagnostic == "tanoak":
+        comparison = add_tanoak_coastal_comparison(
+            comparison_frame, comparison
+        )
     comparison.update(
         {
             "status": "complete",

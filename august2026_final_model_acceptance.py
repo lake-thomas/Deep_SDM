@@ -251,6 +251,38 @@ def synthesize_acceptance(
             row_failures.append("configured_matched_boundary_regression")
         raw_exact_gate = None
         configured_exact_gate = None
+        raw_coastal_gate = None
+        configured_coastal_gate = None
+        if host == "notholithocarpus_densiflorus":
+            raw_coastal_values = (
+                row.get("artifact_coastal_baseline_absolute_did_mean"),
+                row.get("artifact_coastal_candidate_absolute_did_mean"),
+            )
+            configured_coastal_values = (
+                row.get("configured_artifact_coastal_baseline_absolute_did_mean"),
+                row.get("configured_artifact_coastal_candidate_absolute_did_mean"),
+            )
+            raw_coastal_count = row.get("artifact_coastal_pair_count")
+            configured_coastal_count = row.get(
+                "configured_artifact_coastal_pair_count"
+            )
+            if not pd.notna(raw_coastal_count) or raw_coastal_count <= 0:
+                row_failures.append("raw_tanoak_coastal_pair_count")
+            if (
+                not pd.notna(configured_coastal_count)
+                or configured_coastal_count <= 0
+            ):
+                row_failures.append("configured_tanoak_coastal_pair_count")
+            raw_coastal_gate = artifact_nonregression_gate(
+                host, *raw_coastal_values
+            )
+            configured_coastal_gate = artifact_nonregression_gate(
+                host, *configured_coastal_values
+            )
+            if not raw_coastal_gate["passed"]:
+                row_failures.append("raw_tanoak_coastal_regression")
+            if not configured_coastal_gate["passed"]:
+                row_failures.append("configured_tanoak_coastal_regression")
         if host in EASTERN_HOSTS:
             for prefix in ("raw_exact_overlap", "configured_exact_overlap"):
                 if row[f"{prefix}_checkpoint_sha256"] != checkpoint_hash:
@@ -301,6 +333,32 @@ def synthesize_acceptance(
                     "allowed_maximum"
                 ],
                 "configured_matched_passed": configured_gate["passed"],
+                "raw_tanoak_coastal_candidate": (
+                    row.get("artifact_coastal_candidate_absolute_did_mean")
+                    if raw_coastal_gate
+                    else None
+                ),
+                "raw_tanoak_coastal_allowed_maximum": (
+                    raw_coastal_gate["allowed_maximum"] if raw_coastal_gate else None
+                ),
+                "raw_tanoak_coastal_passed": (
+                    raw_coastal_gate["passed"] if raw_coastal_gate else None
+                ),
+                "configured_tanoak_coastal_candidate": (
+                    row.get("configured_artifact_coastal_candidate_absolute_did_mean")
+                    if configured_coastal_gate
+                    else None
+                ),
+                "configured_tanoak_coastal_allowed_maximum": (
+                    configured_coastal_gate["allowed_maximum"]
+                    if configured_coastal_gate
+                    else None
+                ),
+                "configured_tanoak_coastal_passed": (
+                    configured_coastal_gate["passed"]
+                    if configured_coastal_gate
+                    else None
+                ),
                 "raw_exact_baseline": (
                     row.get("raw_exact_overlap_baseline_absolute_shift_mean")
                     if host in EASTERN_HOSTS

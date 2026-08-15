@@ -37,6 +37,7 @@ EFFECT_METRICS = {
     "test_calibration_slope_absolute_error": -1,
     "test_calibration_intercept_absolute_error": -1,
     "artifact_candidate_absolute_did_mean": -1,
+    "artifact_coastal_candidate_absolute_did_mean": -1,
     "exact_overlap_candidate_absolute_shift_mean": -1,
 }
 
