@@ -13,9 +13,9 @@ import pandas as pd
 
 from august2026_augmentation_screen import augmentation_combinations
 from august2026_dataset_screen_evidence import (
-    add_pareto_flags,
     load_artifact_rows,
     load_exact_overlap_rows,
+    pareto_nondominated,
 )
 from august2026_loss_screen_evidence import strict_evidence_gate
 from august2026_summarize_experiments import read_json, sha256, write_json_atomic
@@ -40,6 +40,28 @@ EFFECT_METRICS = {
     "artifact_coastal_candidate_absolute_did_mean": -1,
     "exact_overlap_candidate_absolute_shift_mean": -1,
 }
+
+AUGMENTATION_PARETO_OBJECTIVES = {
+    "test_roc_auc_all_thresholds": "max",
+    "test_brier_score": "min",
+    "artifact_candidate_absolute_did_mean": "min",
+}
+
+
+def add_augmentation_pareto_flags(frame: pd.DataFrame) -> pd.DataFrame:
+    """Flag candidates using each host's prespecified artifact diagnostics."""
+    output = frame.copy()
+    output["pareto_nondominated_within_host"] = False
+    for host, indices in output.groupby("host", sort=False).groups.items():
+        objectives = dict(AUGMENTATION_PARETO_OBJECTIVES)
+        if host == "notholithocarpus_densiflorus":
+            objectives["artifact_coastal_candidate_absolute_did_mean"] = "min"
+        else:
+            objectives["exact_overlap_candidate_absolute_shift_mean"] = "min"
+        output.loc[indices, "pareto_nondominated_within_host"] = pareto_nondominated(
+            output.loc[indices], objectives
+        )
+    return output
 
 
 def write_csv_atomic(path: Path, frame: pd.DataFrame) -> None:
@@ -285,7 +307,7 @@ def synthesize_augmentation_evidence(
 
     combined = pd.concat([baselines, new], ignore_index=True, sort=False)
     combined = add_calibration_error_columns(combined)
-    combined = add_pareto_flags(combined)
+    combined = add_augmentation_pareto_flags(combined)
     pairwise_effects, aggregate_effects = factorial_effect_contrasts(combined)
     if len(pairwise_effects) != len(selections) * 12 or len(
         aggregate_effects

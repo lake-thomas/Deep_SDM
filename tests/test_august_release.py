@@ -12,6 +12,7 @@ from rasterio.transform import from_origin
 
 from august2026_augmentation_screen_evidence import (
     EFFECT_METRICS,
+    add_augmentation_pareto_flags,
     factorial_effect_contrasts,
 )
 from august2026_batch_artifact_probe import add_tanoak_coastal_comparison
@@ -287,6 +288,40 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_augmentation_pareto_includes_host_specific_artifact_replay(self):
+        common = {
+            "test_roc_auc_all_thresholds": [0.90, 0.89],
+            "test_brier_score": [0.10, 0.11],
+            "artifact_candidate_absolute_did_mean": [0.10, 0.11],
+        }
+        eastern = pd.DataFrame(
+            {
+                "host": ["vitis_labrusca", "vitis_labrusca"],
+                **common,
+                "exact_overlap_candidate_absolute_shift_mean": [0.20, 0.05],
+                "artifact_coastal_candidate_absolute_did_mean": [np.nan, np.nan],
+            }
+        )
+        eastern = add_augmentation_pareto_flags(eastern)
+        self.assertEqual(
+            eastern["pareto_nondominated_within_host"].tolist(), [True, True]
+        )
+        tanoak = pd.DataFrame(
+            {
+                "host": [
+                    "notholithocarpus_densiflorus",
+                    "notholithocarpus_densiflorus",
+                ],
+                **common,
+                "exact_overlap_candidate_absolute_shift_mean": [np.nan, np.nan],
+                "artifact_coastal_candidate_absolute_did_mean": [0.20, 0.05],
+            }
+        )
+        tanoak = add_augmentation_pareto_flags(tanoak)
+        self.assertEqual(
+            tanoak["pareto_nondominated_within_host"].tolist(), [True, True]
+        )
+
     def test_final_acceptance_command_step_runs_and_records_completion(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
