@@ -13,6 +13,10 @@ from rasterio.transform import from_origin
 from august2026_record_visual_review import HOSTS, REVIEW_TARGETS, record_visual_review
 from august2026_native_mosaic_parity import run_parity, stable_tile_sample
 from august2026_render_fixed_quickviews import read_aligned_reference
+from august2026_run_augmentation_acceptance import (
+    _validate_resume_identity,
+    probe_commands,
+)
 from august2026_release_evidence import assemble_release_evidence
 from august2026_summarize_experiments import sha256
 from august2026_validate_mosaics import validate_mosaics
@@ -273,6 +277,57 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_stage03_acceptance_builds_complete_raw_probe_matrix(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            commands = probe_commands(
+                root / "registry.tsv", root / "acceptance", "cuda", 32, True
+            )
+            self.assertEqual(len(commands), 9)
+            self.assertEqual(
+                sum(diagnostic == "matched" for diagnostic, _, _, _ in commands),
+                5,
+            )
+            self.assertEqual(
+                sum(
+                    diagnostic == "exact_overlap"
+                    for diagnostic, _, _, _ in commands
+                ),
+                4,
+            )
+            for _, _, _, command in commands:
+                self.assertIn("--score-space", command)
+                self.assertEqual(command[command.index("--score-space") + 1], "raw")
+                self.assertIn("--resume-completed", command)
+
+    def test_stage03_acceptance_resume_is_hash_locked(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            registry = root / "registry.tsv"
+            selection = root / "selection.json"
+            registry.write_text("host\nailanthus_altissima\n", encoding="utf-8")
+            write_json(selection, {"status": "complete"})
+            status = root / "status.json"
+            write_json(
+                status,
+                {
+                    "registry_sha256": sha256(registry),
+                    "selection_manifest_sha256": sha256(selection),
+                    "training_metrics_sha256": sha256(registry),
+                    "code_commit": "abc123",
+                    "device": "cuda",
+                    "batch_size": 64,
+                },
+            )
+            _validate_resume_identity(
+                status, registry, selection, registry, "abc123", "cuda", 64
+            )
+            registry.write_text("host\njuglans_nigra\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                _validate_resume_identity(
+                    status, registry, selection, registry, "abc123", "cuda", 64
+                )
+
     def test_hazel_array_launcher_defaults_to_a_bounded_dry_run(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
