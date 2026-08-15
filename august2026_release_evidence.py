@@ -129,6 +129,8 @@ def _index_selection_chain(
         "training_metrics",
         "combined_loss_candidate_evidence",
         "combined_augmentation_candidate_evidence",
+        "matched_factorial_effects",
+        "factorial_effect_summary",
         "fold_metrics",
         "host_summary",
     )

@@ -10,6 +10,10 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
+from august2026_augmentation_screen_evidence import (
+    EFFECT_METRICS,
+    factorial_effect_contrasts,
+)
 from august2026_record_visual_review import HOSTS, REVIEW_TARGETS, record_visual_review
 from august2026_native_mosaic_parity import run_parity, stable_tile_sample
 from august2026_render_fixed_quickviews import read_aligned_reference
@@ -277,6 +281,38 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_augmentation_effects_are_exactly_matched_factorial_contrasts(self):
+        rows = []
+        for radiometric in (False, True):
+            for dropout in (0.25, 0.35):
+                for smoothing in (0.0, 0.05):
+                    row = {
+                        "host": "ailanthus_altissima",
+                        "experiment": f"r{int(radiometric)}-d{dropout}-s{smoothing}",
+                        "radiometric_enabled": radiometric,
+                        "dropout": dropout,
+                        "label_smoothing": smoothing,
+                    }
+                    for metric, direction in EFFECT_METRICS.items():
+                        baseline = 0.5
+                        # The high radiometric level improves every metric by 0.01
+                        # after applying its declared scientific direction.
+                        row[metric] = baseline + (0.01 * direction if radiometric else 0)
+                    rows.append(row)
+        pairwise, aggregate = factorial_effect_contrasts(pd.DataFrame(rows))
+        self.assertEqual(len(pairwise), 12)
+        self.assertEqual(len(aggregate), 3)
+        radiometric = pairwise[pairwise["factor"] == "radiometric_enabled"]
+        self.assertEqual(len(radiometric), 4)
+        for metric in EFFECT_METRICS:
+            self.assertTrue(
+                np.allclose(radiometric[f"improvement_{metric}"], 0.01)
+            )
+        dropout = pairwise[pairwise["factor"] == "dropout"]
+        self.assertTrue(
+            np.allclose(dropout["improvement_test_roc_auc_all_thresholds"], 0)
+        )
+
     def test_stage03_acceptance_builds_complete_raw_probe_matrix(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
