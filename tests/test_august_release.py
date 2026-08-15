@@ -22,6 +22,11 @@ from august2026_run_augmentation_acceptance import (
     _validate_resume_identity,
     probe_commands,
 )
+from august2026_run_final_model_acceptance import (
+    adopt_completed_support_step,
+    final_probe_commands,
+    run_command_step,
+)
 from august2026_release_evidence import assemble_release_evidence
 from august2026_summarize_experiments import sha256
 from august2026_validate_mosaics import validate_mosaics
@@ -282,6 +287,75 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_final_acceptance_command_step_runs_and_records_completion(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            marker = root / "COMPLETED"
+            status_path = root / "status.json"
+            state = {"completed_steps": []}
+            run_command_step(
+                state,
+                status_path,
+                "raw:matched:test_host",
+                marker,
+                ["touch", str(marker)],
+                root,
+            )
+            self.assertTrue(marker.is_file())
+            self.assertEqual(
+                state["completed_steps"], ["raw:matched:test_host"]
+            )
+            self.assertEqual(
+                json.loads(status_path.read_text(encoding="utf-8"))["completed_steps"],
+                ["raw:matched:test_host"],
+            )
+
+    def test_final_acceptance_builds_raw_and_configured_probe_matrix(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            commands = final_probe_commands(
+                root / "registry.tsv", root / "acceptance", "cuda", 64, True
+            )
+            self.assertEqual(len(commands), 18)
+            self.assertEqual(
+                sum(score == "raw" for score, _, _, _, _ in commands), 9
+            )
+            self.assertEqual(
+                sum(score == "configured" for score, _, _, _, _ in commands), 9
+            )
+            self.assertEqual(
+                sum(kind == "matched" for _, kind, _, _, _ in commands), 10
+            )
+            self.assertEqual(
+                sum(kind == "exact_overlap" for _, kind, _, _, _ in commands),
+                8,
+            )
+            for score, _, _, _, command in commands:
+                self.assertEqual(command[command.index("--score-space") + 1], score)
+                self.assertIn("--resume-completed", command)
+
+    def test_final_acceptance_adopts_only_hash_matched_support_audit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            marker = root / "COMPLETED"
+            summary = root / "summary.json"
+            status_path = root / "status.json"
+            marker.write_text("completed\n", encoding="utf-8")
+            write_json(summary, {"status": "complete", "registry_sha256": "abc"})
+            state = {"completed_steps": []}
+            self.assertTrue(
+                adopt_completed_support_step(
+                    state, status_path, "support:pathway", marker, summary,
+                    {"registry_sha256": "abc"},
+                )
+            )
+            self.assertEqual(state["completed_steps"], ["support:pathway"])
+            with self.assertRaises(ValueError):
+                adopt_completed_support_step(
+                    {"completed_steps": []}, status_path, "support:pathway",
+                    marker, summary, {"registry_sha256": "changed"},
+                )
+
     def test_tanoak_coastal_comparison_is_a_separate_paired_gate(self):
         frame = pd.DataFrame(
             {
