@@ -29,6 +29,8 @@ set +u
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV_NAME}"
 set -u
+python "${BUNDLE_ROOT}/validate_submission_gate.py" bundle \
+  --bundle-root "${BUNDLE_ROOT}" >/dev/null
 python "${BUNDLE_ROOT}/august2026_native_mosaic_parity.py" \
   --tile-manifest "${TILE_MANIFEST}" \
   --prediction-output-root "${ACTIVE_OUTPUT_ROOT}/${REGION}/${HOST_SLUG}/deterministic" \

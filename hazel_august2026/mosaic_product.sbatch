@@ -59,6 +59,9 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV_NAME}"
 set -u
 
+python "${BUNDLE_ROOT}/validate_submission_gate.py" bundle \
+  --bundle-root "${BUNDLE_ROOT}" >/dev/null
+
 python "${BUNDLE_ROOT}/august2026_prepare_mosaic_inputs.py" \
   --tile-manifest "${TILE_MANIFEST}" \
   --inference-output-root "${SOURCE_OUTPUT_ROOT}" \

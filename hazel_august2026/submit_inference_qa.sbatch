@@ -23,6 +23,8 @@ HPC_ROOT="${HPC_ROOT:-/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/share/rkmeente/talake2/host_sdm_august2026/production_model_inference_august2026}"
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-/usr/local/usrapps/rkmeente/talake2/host-naip-sdm}"
 QA_ROOT="${OUTPUT_ROOT}/_run_metadata/qa/${REGION}/${HOST_SLUG}/${PRODUCT}"
+QA_OUTPUT_ID="${QA_OUTPUT_ID:-${SLURM_JOB_ID:-manual}}"
+QA_ROOT="${QA_ROOT}/attempt_${QA_OUTPUT_ID}"
 SOURCE_ROOT="${OUTPUT_ROOT}/${REGION}/${HOST_SLUG}/${PRODUCT}"
 candidate_env="${OUTPUT_ROOT}/_run_metadata/status/${REGION}/${HOST_SLUG}/${PRODUCT}/qa_candidate.env"
 
@@ -30,6 +32,8 @@ set +u
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV_NAME}"
 set -u
+python "${BUNDLE_ROOT}/validate_submission_gate.py" bundle \
+  --bundle-root "${BUNDLE_ROOT}" --registry "${PRODUCTION_REGISTRY}" >/dev/null
 python "${BUNDLE_ROOT}/resolve_production_candidate.py" \
   --registry "${PRODUCTION_REGISTRY}" --host "${HOST_SLUG}" \
   --hpc-root "${HPC_ROOT}" > "${candidate_env}"

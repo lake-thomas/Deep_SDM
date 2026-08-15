@@ -35,6 +35,7 @@ SUPPORT_FILES = [
     "submit_inference_qa.sbatch",
     "submit_release_mosaics.sh",
     "submit_shards.sh",
+    "validate_submission_gate.py",
 ]
 
 

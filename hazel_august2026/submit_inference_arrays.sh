@@ -38,6 +38,8 @@ if [[ ! -s "${PRODUCTION_REGISTRY}" || ! -s "${BUNDLE_ROOT}/COMPLETED" ]]; then
   echo "Production registry or frozen bundle is incomplete" >&2
   exit 3
 fi
+python3 "${SCRIPT_DIR}/validate_submission_gate.py" bundle \
+  --bundle-root "${BUNDLE_ROOT}" --registry "${PRODUCTION_REGISTRY}" >/dev/null
 declare -A SEEN_HOSTS=()
 for host in "${HOSTS[@]}"; do
   if [[ ! "${host}" =~ ^[a-z0-9_]+$ || -n "${SEEN_HOSTS[${host}]:-}" ]]; then
@@ -69,12 +71,18 @@ if [[ "${DRY_RUN}" != "0" && "${DRY_RUN}" != "1" ]]; then
 fi
 shard_count="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["shard_count"])' "${metadata}")"
 metadata_status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status", ""))' "${metadata}")"
+tile_manifest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("source_manifest", ""))' "${metadata}")"
+tile_manifest_sha256="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("source_manifest_sha256", ""))' "${metadata}")"
 if (( shard_count < 1 || shard_count > 1001 )); then
   echo "Shard count ${shard_count} violates the bounded Hazel array design" >&2
   exit 6
 fi
 if [[ "${metadata_status}" != "complete" ]]; then
   echo "Shard metadata is not complete" >&2
+  exit 6
+fi
+if [[ ! -s "${tile_manifest}" || "$(sha256sum "${tile_manifest}" | awk '{print $1}')" != "${tile_manifest_sha256}" ]]; then
+  echo "Shard source tile manifest is missing or changed" >&2
   exit 6
 fi
 last_index=$((shard_count - 1))
@@ -91,9 +99,12 @@ for (( index=0; index<shard_count; index++ )); do
   fi
 done
 metadata_sha256="$(sha256sum "${metadata}" | awk '{print $1}')"
+registry_sha256="$(sha256sum "${PRODUCTION_REGISTRY}" | awk '{print $1}')"
+bundle_metadata="${BUNDLE_ROOT}/bundle_metadata.json"
+bundle_metadata_sha256="$(sha256sum "${bundle_metadata}" | awk '{print $1}')"
 mkdir -p "$(dirname "${SUBMISSION_LOG}")" "${OUTPUT_ROOT}/_slurm_logs"
 mkdir -p "${HPC_ROOT}/Outputs_Host_NAIP_SDMs/production_model_inference_august2026/_slurm_logs"
-printf 'submitted_at\tregion\tproduct\thost\tjob_id\tdependency_job_id\tarray_spec\tshard_count\tshard_metadata\tshard_metadata_sha256\tmax_active_tasks_within_submission\tdry_run\n' > "${SUBMISSION_LOG}"
+printf 'submitted_at\tregion\tproduct\thost\tarray_job_id\tqa_job_id\tdependency_job_id\tarray_spec\tshard_count\tshard_metadata\tshard_metadata_sha256\ttile_manifest\ttile_manifest_sha256\tproduction_registry\tproduction_registry_sha256\tbundle_root\tbundle_metadata_sha256\tmax_active_tasks_within_submission\tdry_run\n' > "${SUBMISSION_LOG}"
 
 previous_job=""
 for host in "${HOSTS[@]}"; do
@@ -109,25 +120,50 @@ for host in "${HOSTS[@]}"; do
     command=("${command[@]:0:2}" --dependency="afterany:${previous_job}" "${command[@]:2}")
   fi
   if [[ "${DRY_RUN}" == "1" ]]; then
-    printf 'DRY_RUN command='
+    printf 'DRY_RUN inference_array_command='
     printf '%q ' "${command[@]}"
     printf '\n'
     job_id="DRY_RUN"
+    qa_job_id="DRY_RUN"
+    printf 'DRY_RUN inference_qa_command=sbatch --parsable --dependency=afterok:%q --export=ALL,HOST_SLUG=%q,REGION=%q,PRODUCT=%q,TILE_MANIFEST=%q,PRODUCTION_REGISTRY=%q,BUNDLE_ROOT=%q,QA_OUTPUT_ID=%q %q\n' \
+      "${job_id}" "${host}" "${REGION}" "${PRODUCT}" "${tile_manifest}" \
+      "${PRODUCTION_REGISTRY}" "${BUNDLE_ROOT}" "${job_id}" \
+      "${SCRIPT_DIR}/submit_inference_qa.sbatch"
   else
     if ! job_id="$("${command[@]}")"; then
       job_id=SUBMISSION_FAILED
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$(date -Is)" "${REGION}" "${PRODUCT}" "${host}" "${job_id}" \
+      qa_job_id=NOT_SUBMITTED
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$(date -Is)" "${REGION}" "${PRODUCT}" "${host}" "${job_id}" "${qa_job_id}" \
         "${previous_job}" "${array_spec}" "${shard_count}" "${metadata}" \
-        "${metadata_sha256}" "${MAX_CONCURRENT}" "${DRY_RUN}" >> "${SUBMISSION_LOG}"
+        "${metadata_sha256}" "${tile_manifest}" "${tile_manifest_sha256}" \
+        "${PRODUCTION_REGISTRY}" "${registry_sha256}" "${BUNDLE_ROOT}" \
+        "${bundle_metadata_sha256}" \
+        "${MAX_CONCURRENT}" "${DRY_RUN}" >> "${SUBMISSION_LOG}"
       exit 7
     fi
+    if ! qa_job_id="$(sbatch --parsable --dependency="afterok:${job_id}" \
+        --export=ALL,HOST_SLUG="${host}",REGION="${REGION}",PRODUCT="${PRODUCT}",TILE_MANIFEST="${tile_manifest}",PRODUCTION_REGISTRY="${PRODUCTION_REGISTRY}",BUNDLE_ROOT="${BUNDLE_ROOT}",QA_OUTPUT_ID="${job_id}" \
+        "${SCRIPT_DIR}/submit_inference_qa.sbatch")"; then
+      qa_job_id=SUBMISSION_FAILED
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$(date -Is)" "${REGION}" "${PRODUCT}" "${host}" "${job_id}" "${qa_job_id}" \
+        "${previous_job}" "${array_spec}" "${shard_count}" "${metadata}" \
+        "${metadata_sha256}" "${tile_manifest}" "${tile_manifest_sha256}" \
+        "${PRODUCTION_REGISTRY}" "${registry_sha256}" "${BUNDLE_ROOT}" \
+        "${bundle_metadata_sha256}" \
+        "${MAX_CONCURRENT}" "${DRY_RUN}" >> "${SUBMISSION_LOG}"
+      exit 8
+    fi
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$(date -Is)" "${REGION}" "${PRODUCT}" "${host}" "${job_id}" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -Is)" "${REGION}" "${PRODUCT}" "${host}" "${job_id}" "${qa_job_id}" \
     "${previous_job}" "${array_spec}" "${shard_count}" "${metadata}" \
-    "${metadata_sha256}" "${MAX_CONCURRENT}" "${DRY_RUN}" >> "${SUBMISSION_LOG}"
+    "${metadata_sha256}" "${tile_manifest}" "${tile_manifest_sha256}" \
+    "${PRODUCTION_REGISTRY}" "${registry_sha256}" "${BUNDLE_ROOT}" \
+    "${bundle_metadata_sha256}" \
+    "${MAX_CONCURRENT}" "${DRY_RUN}" >> "${SUBMISSION_LOG}"
   previous_job="${job_id}"
 done
-printf 'dry_run=%s serialized_arrays=%s max_active_tasks_within_submission=%s submission_log=%s\n' \
-  "${DRY_RUN}" "${#HOSTS[@]}" "${MAX_CONCURRENT}" "${SUBMISSION_LOG}"
+printf 'dry_run=%s serialized_arrays=%s dependent_qa_jobs=%s max_active_tasks_within_submission=%s submission_log=%s\n' \
+  "${DRY_RUN}" "${#HOSTS[@]}" "${#HOSTS[@]}" "${MAX_CONCURRENT}" "${SUBMISSION_LOG}"

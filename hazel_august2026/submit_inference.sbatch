@@ -58,6 +58,9 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV_NAME}"
 set -u
 
+"${PYTHON_BIN}" "${BUNDLE_ROOT}/validate_submission_gate.py" bundle \
+  --bundle-root "${BUNDLE_ROOT}" --registry "${PRODUCTION_REGISTRY}" >/dev/null
+
 candidate_env="${STATUS_DIR}/shard_${SHARD_ID}_candidate.env"
 "${PYTHON_BIN}" "${BUNDLE_ROOT}/resolve_production_candidate.py" \
   --registry "${PRODUCTION_REGISTRY}" --host "${HOST_SLUG}" \

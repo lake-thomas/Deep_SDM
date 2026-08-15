@@ -31,11 +31,39 @@ from august2026_run_final_model_acceptance import (
 from august2026_release_evidence import assemble_release_evidence
 from august2026_summarize_experiments import sha256
 from august2026_validate_mosaics import validate_mosaics
+from hazel_august2026.validate_submission_gate import (
+    validate_bundle,
+    validate_inference_qa,
+)
 
 
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def write_minimal_hazel_bundle(bundle: Path, registry: Path | None = None) -> None:
+    bundle.mkdir()
+    if registry is None:
+        sentinel = bundle / "sentinel.txt"
+        sentinel.write_text("frozen\n", encoding="utf-8")
+        hashes = {sentinel.name: sha256(sentinel)}
+        source_registry_hash = None
+    else:
+        bundled_registry = bundle / "production_experiment_registry.tsv"
+        bundled_registry.write_bytes(registry.read_bytes())
+        hashes = {bundled_registry.name: sha256(bundled_registry)}
+        source_registry_hash = sha256(registry)
+    write_json(
+        bundle / "bundle_metadata.json",
+        {
+            "status": "complete",
+            "bundle_type": "accepted_august2026_hazel_hann_inference",
+            "source_registry_sha256": source_registry_hash,
+            "file_sha256": hashes,
+        },
+    )
+    (bundle / "COMPLETED").write_text("completed\n", encoding="utf-8")
 
 
 class AugustVisualReviewTests(unittest.TestCase):
@@ -288,6 +316,46 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_hazel_submission_gate_rejects_changed_bundle_and_qa_identity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            registry = root / "registry.tsv"
+            registry.write_text("host\nailanthus_altissima\n", encoding="utf-8")
+            bundle = root / "bundle"
+            write_minimal_hazel_bundle(bundle, registry)
+            validate_bundle(bundle, registry)
+            (bundle / "production_experiment_registry.tsv").write_text(
+                "host\njuglans_nigra\n", encoding="utf-8"
+            )
+            with self.assertRaises(ValueError):
+                validate_bundle(bundle, registry)
+
+            manifest = root / "tiles.txt"
+            manifest.write_text("/archive/tile.tif\n", encoding="utf-8")
+            qa_root = root / "qa"
+            qa_root.mkdir()
+            summary = qa_root / "summary.json"
+            write_json(
+                summary,
+                {
+                    "status": "complete", "production_ready": True,
+                    "host": "ailanthus_altissima", "region": "east",
+                    "product": "deterministic",
+                    "tile_manifest_sha256": sha256(manifest),
+                    "expected_tile_count": 1,
+                },
+            )
+            (qa_root / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            validate_inference_qa(
+                summary, manifest, "ailanthus_altissima", "east",
+                "deterministic", 1,
+            )
+            with self.assertRaises(ValueError):
+                validate_inference_qa(
+                    summary, manifest, "ailanthus_altissima", "east",
+                    "uncertainty", 1,
+                )
+
     def test_augmentation_pareto_includes_host_specific_artifact_replay(self):
         common = {
             "test_roc_auc_all_thresholds": [0.90, 0.89],
@@ -499,9 +567,15 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             shards = root / "shards"
             shards.mkdir()
             (shards / "shard_00000.txt").write_text("/archive/tile.tif\n", encoding="utf-8")
+            tile_manifest = root / "tiles.txt"
+            tile_manifest.write_text("/archive/tile.tif\n", encoding="utf-8")
             write_json(
                 shards / "shard_metadata.json",
-                {"status": "complete", "shard_count": 1},
+                {
+                    "status": "complete", "shard_count": 1,
+                    "source_manifest": str(tile_manifest),
+                    "source_manifest_sha256": sha256(tile_manifest),
+                },
             )
             (shards / "COMPLETED").write_text("completed\n", encoding="utf-8")
             registry = root / "registry.tsv"
@@ -509,8 +583,7 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                 "host\nailanthus_altissima\njuglans_nigra\n", encoding="utf-8"
             )
             bundle = root / "bundle"
-            bundle.mkdir()
-            (bundle / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            write_minimal_hazel_bundle(bundle, registry)
             log = root / "submission.tsv"
             script = Path(__file__).resolve().parents[1] / "hazel_august2026" / "submit_inference_arrays.sh"
             environment = dict(os.environ)
@@ -524,10 +597,12 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                 ],
                 check=True, capture_output=True, text=True, env=environment,
             )
-            self.assertIn("DRY_RUN command=", result.stdout)
+            self.assertIn("DRY_RUN inference_array_command=", result.stdout)
+            self.assertIn("DRY_RUN inference_qa_command=", result.stdout)
             submission = pd.read_csv(log, sep="\t")
             self.assertEqual(len(submission), 2)
-            self.assertEqual(submission.loc[0, "job_id"], "DRY_RUN")
+            self.assertEqual(submission.loc[0, "array_job_id"], "DRY_RUN")
+            self.assertEqual(submission.loc[0, "qa_job_id"], "DRY_RUN")
             self.assertEqual(submission.loc[1, "dependency_job_id"], "DRY_RUN")
             self.assertEqual(int(submission.loc[0, "dry_run"]), 1)
             self.assertEqual(
@@ -542,16 +617,21 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             (shards / "shard_00000.txt").write_text(
                 "/archive/tile.tif\n", encoding="utf-8"
             )
+            tile_manifest = root / "tiles.txt"
+            tile_manifest.write_text("/archive/tile.tif\n", encoding="utf-8")
             write_json(
                 shards / "shard_metadata.json",
-                {"status": "complete", "shard_count": 1},
+                {
+                    "status": "complete", "shard_count": 1,
+                    "source_manifest": str(tile_manifest),
+                    "source_manifest_sha256": sha256(tile_manifest),
+                },
             )
             (shards / "COMPLETED").write_text("completed\n", encoding="utf-8")
             registry = root / "registry.tsv"
             registry.write_text("host\nailanthus_altissima\n", encoding="utf-8")
             bundle = root / "bundle"
-            bundle.mkdir()
-            (bundle / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            write_minimal_hazel_bundle(bundle, registry)
             submission_log = root / "legacy_submission.tsv"
             script = (
                 Path(__file__).resolve().parents[1]
@@ -574,20 +654,38 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                 check=True, capture_output=True, text=True, env=environment,
             )
             self.assertIn("routing all shards through bounded Slurm arrays", result.stderr)
-            self.assertIn("DRY_RUN command=", result.stdout)
+            self.assertIn("DRY_RUN inference_array_command=", result.stdout)
             submission = pd.read_csv(submission_log, sep="\t")
-            self.assertEqual(submission.loc[0, "job_id"], "DRY_RUN")
+            self.assertEqual(submission.loc[0, "array_job_id"], "DRY_RUN")
 
     def test_hazel_mosaic_launcher_uses_three_task_dry_run_array(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             tile_manifest = root / "tiles.csv"
-            tile_manifest.write_text("path\n/archive/tile.tif\n", encoding="utf-8")
+            tile_manifest.write_text("/archive/tile.tif\n", encoding="utf-8")
             bundle = root / "bundle"
-            bundle.mkdir()
-            (bundle / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            write_minimal_hazel_bundle(bundle)
             june_reference = root / "june_reference.tif"
             june_reference.write_bytes(b"june reference")
+            qa_summaries = []
+            for product in ("deterministic", "uncertainty"):
+                qa_root = root / f"{product}_qa"
+                qa_root.mkdir()
+                summary = qa_root / "summary.json"
+                write_json(
+                    summary,
+                    {
+                        "status": "complete", "production_ready": True,
+                        "host": "ailanthus_altissima",
+                        "region": "east_of_mississippi", "product": product,
+                        "tile_manifest_sha256": sha256(tile_manifest),
+                        "expected_tile_count": 1,
+                    },
+                )
+                (qa_root / "COMPLETED").write_text(
+                    "completed\n", encoding="utf-8"
+                )
+                qa_summaries.append(summary)
             submission_log = root / "mosaic_submission.tsv"
             script = (
                 Path(__file__).resolve().parents[1]
@@ -606,8 +704,8 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     "bash", str(script), "ailanthus_altissima",
-                    "east_of_mississippi", str(tile_manifest), str(bundle), "12",
-                    str(june_reference),
+                    "east_of_mississippi", str(tile_manifest), str(bundle), "1",
+                    str(june_reference), str(qa_summaries[0]), str(qa_summaries[1]),
                 ],
                 check=True, capture_output=True, text=True, env=environment,
             )
