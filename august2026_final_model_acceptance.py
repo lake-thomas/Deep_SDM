@@ -432,6 +432,7 @@ def synthesize_acceptance(
             "low_seam_controls": sorted(HOSTS - SEAM_POSITIVE_HOSTS),
             "control_absolute_tolerance": CONTROL_ABSOLUTE_TOLERANCE,
             "control_relative_tolerance": CONTROL_RELATIVE_TOLERANCE,
+            "tanoak_coastal_west_of_123_must_pass": True,
             "raw_model_and_configured_release_must_both_pass": True,
         },
         "guardrail": (
