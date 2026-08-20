@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from august2026_augmentation_screen import augmentation_combinations
+from august2026_batch_artifact_probe import add_tanoak_coastal_comparison
 from august2026_dataset_screen_evidence import (
     load_artifact_rows,
     load_exact_overlap_rows,
@@ -88,6 +89,80 @@ def add_calibration_error_columns(frame: pd.DataFrame) -> pd.DataFrame:
     output["test_calibration_intercept_absolute_error"] = pd.to_numeric(
         output["test_calibration_calibration_intercept"], errors="coerce"
     ).abs()
+    return output
+
+
+def fill_missing_tanoak_coastal_evidence(frame: pd.DataFrame) -> pd.DataFrame:
+    """Backfill an older reused baseline from its frozen paired comparison.
+
+    The coastal Tanoak gate was added after the Stage 01 baseline evidence was
+    synthesized.  New Stage 03 candidates already carry the metric in their
+    comparison summaries.  Recompute only a missing reused value from the
+    immutable paired comparison CSV, using the same helper and longitude gate
+    as the current artifact probe, rather than weakening the Pareto objective.
+    """
+    output = frame.copy()
+    coastal_columns = {
+        "artifact_coastal_pair_count": "pair_count",
+        "artifact_coastal_baseline_absolute_did_mean":
+            "baseline_absolute_did_mean",
+        "artifact_coastal_candidate_absolute_did_mean":
+            "candidate_absolute_did_mean",
+        "artifact_coastal_paired_absolute_did_reduction_mean":
+            "paired_absolute_did_reduction_mean",
+    }
+    for column in coastal_columns:
+        if column not in output:
+            output[column] = np.nan
+    output["artifact_coastal_evidence_origin"] = np.where(
+        pd.to_numeric(
+            output["artifact_coastal_candidate_absolute_did_mean"],
+            errors="coerce",
+        ).notna(),
+        "artifact_summary",
+        None,
+    )
+    output["artifact_coastal_paired_comparison_csv"] = None
+    output["artifact_coastal_paired_comparison_csv_sha256"] = None
+
+    tanoak = output["host"] == "notholithocarpus_densiflorus"
+    missing = tanoak & ~np.isfinite(
+        pd.to_numeric(
+            output["artifact_coastal_candidate_absolute_did_mean"],
+            errors="coerce",
+        )
+    )
+    for index in output.index[missing]:
+        summary_path = Path(str(output.at[index, "artifact_comparison_summary"]))
+        if not summary_path.is_file():
+            raise FileNotFoundError(
+                f"Missing Tanoak artifact comparison summary: {summary_path}"
+            )
+        summary = read_json(summary_path)
+        if summary.get("candidate_experiment") != output.at[index, "experiment"]:
+            raise ValueError("Tanoak baseline comparison experiment changed")
+        pairs_path = summary_path.parent / "paired_artifact_comparison.csv"
+        if not pairs_path.is_file():
+            raise FileNotFoundError(
+                f"Missing Tanoak paired artifact comparison: {pairs_path}"
+            )
+        coastal = add_tanoak_coastal_comparison(
+            pd.read_csv(pairs_path, low_memory=False), {}
+        )["coastal_west_of_123"]
+        for column, key in coastal_columns.items():
+            value = coastal.get(key)
+            if value is None or not np.isfinite(float(value)):
+                raise ValueError(f"Non-finite Tanoak coastal evidence: {key}")
+            output.at[index, column] = value
+        output.at[index, "artifact_coastal_evidence_origin"] = (
+            "recomputed_from_frozen_paired_artifact_comparison"
+        )
+        output.at[index, "artifact_coastal_paired_comparison_csv"] = str(
+            pairs_path.resolve()
+        )
+        output.at[index, "artifact_coastal_paired_comparison_csv_sha256"] = sha256(
+            pairs_path
+        )
     return output
 
 
@@ -306,6 +381,7 @@ def synthesize_augmentation_evidence(
             raise ValueError(f"Augmentation candidates changed loss for {host}")
 
     combined = pd.concat([baselines, new], ignore_index=True, sort=False)
+    combined = fill_missing_tanoak_coastal_evidence(combined)
     combined = add_calibration_error_columns(combined)
     combined = add_augmentation_pareto_flags(combined)
     pairwise_effects, aggregate_effects = factorial_effect_contrasts(combined)

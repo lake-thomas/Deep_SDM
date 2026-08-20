@@ -14,6 +14,7 @@ from august2026_augmentation_screen_evidence import (
     EFFECT_METRICS,
     add_augmentation_pareto_flags,
     factorial_effect_contrasts,
+    fill_missing_tanoak_coastal_evidence,
 )
 from august2026_batch_artifact_probe import add_tanoak_coastal_comparison
 from august2026_record_visual_review import HOSTS, REVIEW_TARGETS, record_visual_review
@@ -477,6 +478,47 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
         changed.loc[0, "mid_lon_y"] = -123.9
         with self.assertRaises(ValueError):
             add_tanoak_coastal_comparison(changed, {})
+
+    def test_augmentation_backfills_reused_tanoak_coastal_evidence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            comparison = root / "june_baseline_comparison"
+            comparison.mkdir()
+            write_json(
+                comparison / "summary.json",
+                {"candidate_experiment": "baseline-tanoak"},
+            )
+            pd.DataFrame(
+                {
+                    "mid_lon_x": [-124.0, -123.5, -122.5],
+                    "mid_lon_y": [-124.0, -123.5, -122.5],
+                    "baseline_did": [0.10, -0.20, 0.03],
+                    "candidate_did": [0.05, -0.10, 0.02],
+                }
+            ).to_csv(comparison / "paired_artifact_comparison.csv", index=False)
+            frame = pd.DataFrame(
+                {
+                    "host": ["notholithocarpus_densiflorus"],
+                    "experiment": ["baseline-tanoak"],
+                    "artifact_comparison_summary": [
+                        str(comparison / "summary.json")
+                    ],
+                    "artifact_coastal_candidate_absolute_did_mean": [np.nan],
+                }
+            )
+            result = fill_missing_tanoak_coastal_evidence(frame).iloc[0]
+            self.assertEqual(result["artifact_coastal_pair_count"], 2)
+            self.assertAlmostEqual(
+                result["artifact_coastal_candidate_absolute_did_mean"], 0.075
+            )
+            self.assertEqual(
+                result["artifact_coastal_evidence_origin"],
+                "recomputed_from_frozen_paired_artifact_comparison",
+            )
+            self.assertEqual(
+                result["artifact_coastal_paired_comparison_csv_sha256"],
+                sha256(comparison / "paired_artifact_comparison.csv"),
+            )
 
     def test_augmentation_effects_are_exactly_matched_factorial_contrasts(self):
         rows = []
