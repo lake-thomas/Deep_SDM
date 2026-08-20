@@ -414,6 +414,45 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                 ["raw:matched:test_host"],
             )
 
+    def test_augmentation_resume_records_ancestor_commit_upgrade(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            registry = root / "registry.tsv"
+            selection = root / "selection.json"
+            metrics = root / "metrics.csv"
+            for path in (registry, selection, metrics):
+                path.write_text(path.name, encoding="utf-8")
+            code_root = Path(__file__).resolve().parents[1]
+            current = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=code_root, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+            previous = subprocess.run(
+                ["git", "rev-parse", "HEAD^"], cwd=code_root, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+            status_path = root / "status.json"
+            write_json(
+                status_path,
+                {
+                    "registry_sha256": sha256(registry),
+                    "selection_manifest_sha256": sha256(selection),
+                    "training_metrics_sha256": sha256(metrics),
+                    "code_commit": previous,
+                    "device": "cuda",
+                    "batch_size": 64,
+                },
+            )
+            status = _validate_resume_identity(
+                status_path, registry, selection, metrics, current, "cuda", 64,
+                allow_code_commit_upgrade=True, code_root=code_root,
+            )
+            self.assertEqual(status["code_commit"], current)
+            self.assertEqual(status["code_commit_history"], [previous])
+            self.assertEqual(
+                status["resume_code_commit_upgrades"][0]["new_commit"], current
+            )
+
     def test_final_acceptance_builds_raw_and_configured_probe_matrix(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
