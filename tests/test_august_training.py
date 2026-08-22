@@ -1426,7 +1426,7 @@ class AugustExperimentDesignTests(unittest.TestCase):
     def test_blockcv_calibration_rule_is_paired_and_conservative(self):
         group = pd.DataFrame(
             {
-                "test_brier_score": [0.20, 0.21, 0.19, 0.22, 0.18],
+                "test_calibration_brier_score": [0.20, 0.21, 0.19, 0.22, 0.18],
                 "test_platt_calibration_brier_score": [0.18, 0.20, 0.18, 0.23, 0.17],
                 "test_calibration_binary_log_loss": [0.60, 0.61, 0.58, 0.63, 0.55],
                 "test_platt_calibration_binary_log_loss": [0.56, 0.58, 0.55, 0.64, 0.52],

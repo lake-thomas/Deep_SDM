@@ -23,7 +23,10 @@ MIN_MEDIAN_ROC_AUC = 0.75
 METRICS = {
     "test_roc_auc_all_thresholds": "roc_auc",
     "test_average_precision_all_thresholds": "average_precision",
-    "test_brier_score": "raw_brier_score",
+    # ``test_brier_score`` follows the configured score space.  Every BlockCV
+    # run is configured for Platt evidence, so use the explicit raw-calibration
+    # artifact for the paired raw-versus-Platt comparison.
+    "test_calibration_brier_score": "raw_brier_score",
     "test_calibration_binary_log_loss": "raw_binary_log_loss",
     "test_calibration_expected_calibration_error": "raw_ece",
     "test_calibration_calibration_intercept": "raw_calibration_intercept",
@@ -59,7 +62,9 @@ def summarize_values(values: pd.Series, prefix: str) -> dict:
 
 
 def calibration_recommendation(group: pd.DataFrame) -> dict:
-    raw_brier = pd.to_numeric(group["test_brier_score"], errors="coerce").to_numpy(float)
+    raw_brier = pd.to_numeric(
+        group["test_calibration_brier_score"], errors="coerce"
+    ).to_numpy(float)
     platt_brier = pd.to_numeric(
         group["test_platt_calibration_brier_score"], errors="coerce"
     ).to_numpy(float)
