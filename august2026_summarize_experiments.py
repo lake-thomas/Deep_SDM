@@ -48,6 +48,8 @@ def _prefixed(payload: dict, prefix: str) -> dict:
 def summarize_row(row: dict, design_commit: str | None) -> dict:
     run_dir = Path(row["run_dir"])
     config_path = Path(row["config_path"])
+    config = read_json(config_path)
+    postfit_calibration = str(config.get("postfit_calibration", "none")).lower()
     result = dict(row)
     result["run_complete"] = False
     result["evidence_gate_passed"] = False
@@ -59,12 +61,13 @@ def summarize_row(row: dict, design_commit: str | None) -> dict:
         "runtime_provenance": run_dir / "runtime_provenance.json",
         "training_design": run_dir / "training_design.json",
         "training_history": run_dir / "training_history.csv",
-        "test_metrics": run_dir / "model_summary_metrics.csv",
         "validation_calibration": run_dir / "validation_raw_calibration_metrics.json",
         "test_calibration": run_dir / "test_raw_calibration_metrics.json",
         "validation_threshold": run_dir / "validation_threshold.json",
         "best_checkpoint": run_dir / "checkpoints" / "best.pt",
     }
+    if postfit_calibration != "platt":
+        required["test_metrics"] = run_dir / "model_summary_metrics.csv"
     missing = [name for name, path in required.items() if not path.is_file()]
     if missing:
         result["evidence_gate_failures"] = "missing:" + ",".join(missing)
@@ -83,7 +86,7 @@ def summarize_row(row: dict, design_commit: str | None) -> dict:
         failures.append("runtime_commit_mismatch")
     if runtime.get("config_sha256") != sha256(config_path):
         failures.append("config_hash_mismatch")
-    dataset_path = Path(read_json(config_path)["csv_path"])
+    dataset_path = Path(config["csv_path"])
     if training_design.get("dataset_csv_sha256") != sha256(dataset_path):
         failures.append("dataset_hash_mismatch")
 
@@ -98,19 +101,18 @@ def summarize_row(row: dict, design_commit: str | None) -> dict:
         result["best_val_loss"] = float(history.loc[best_index, "val_loss"])
         result["final_val_loss"] = float(history.iloc[-1]["val_loss"])
 
-    test_metrics = pd.read_csv(required["test_metrics"])
-    if len(test_metrics) != 1:
-        failures.append("invalid_test_metrics")
-    else:
-        result.update(_prefixed(test_metrics.iloc[0].to_dict(), "test"))
+    if postfit_calibration != "platt":
+        test_metrics = pd.read_csv(required["test_metrics"])
+        if len(test_metrics) != 1:
+            failures.append("invalid_test_metrics")
+        else:
+            result.update(_prefixed(test_metrics.iloc[0].to_dict(), "test"))
     result.update(
         _prefixed(read_json(required["validation_calibration"]), "validation_calibration")
     )
     result.update(_prefixed(read_json(required["test_calibration"]), "test_calibration"))
     result.update(_prefixed(read_json(required["validation_threshold"]), "threshold"))
     result.update(_prefixed(training_design, "training"))
-    config = read_json(config_path)
-    postfit_calibration = str(config.get("postfit_calibration", "none")).lower()
     result["postfit_calibration"] = postfit_calibration
     if postfit_calibration == "platt":
         calibrated_required = {
@@ -125,16 +127,18 @@ def summarize_row(row: dict, design_commit: str | None) -> dict:
         if missing_calibrated:
             failures.append("missing_platt:" + ",".join(missing_calibrated))
         else:
+            configured_test_metrics = read_json(
+                calibrated_required["test_platt_metrics"]
+            )
+            if not isinstance(configured_test_metrics, dict) or not configured_test_metrics:
+                failures.append("invalid_test_metrics")
+            else:
+                result.update(_prefixed(configured_test_metrics, "test"))
+                result.update(_prefixed(configured_test_metrics, "test_platt"))
             result.update(
                 _prefixed(
                     read_json(calibrated_required["platt_calibrator"]),
                     "platt_calibrator",
-                )
-            )
-            result.update(
-                _prefixed(
-                    read_json(calibrated_required["test_platt_metrics"]),
-                    "test_platt",
                 )
             )
             result.update(
