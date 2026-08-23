@@ -46,6 +46,9 @@ from august2026_ailanthus_robustness_evidence import (
     add_advancement_gates,
 )
 from august2026_ailanthus_blockcv import replacement_name
+from august2026_ailanthus_production_train import (
+    replacement_name as replacement_production_name,
+)
 from august2026_combine_dataset_screen_evidence import HOSTS, combine_evidence
 from august2026_inference_output_qa import validate_triplet
 from august2026_prepare_mosaic_inputs import prepare_inputs
@@ -256,6 +259,20 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertEqual(len(set(names)), 5)
         self.assertTrue(all(name.startswith("stage05b_ailanthus_altissima_") for name in names))
         self.assertTrue(all("_rad2_" in name for name in names))
+
+    def test_ailanthus_replacement_production_name_preserves_lineage(self):
+        selection = {
+            "arm": "domain_balanced",
+            "background_target": 20000,
+            "radiometric_recipe": "rad2",
+            "dropout": 0.35,
+            "label_smoothing": 0.05,
+            "production_postfit_calibration": "platt",
+        }
+        name = replacement_production_name(selection)
+        self.assertIn("production_replacement_ailanthus_altissima", name)
+        self.assertIn("_rad2_", name)
+        self.assertIn("_platt_", name)
 
     def test_ailanthus_robustness_advancement_gates_are_conjunctive(self):
         import pandas as pd
