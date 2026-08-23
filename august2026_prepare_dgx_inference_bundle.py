@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from august2026_combine_dataset_screen_evidence import HOSTS
+from august2026_record_visual_review import REVIEW_TARGETS
 from august2026_summarize_experiments import read_json, sha256, write_json_atomic
 
 CODE_FILES = ["inference_multimodal_production.py", "august2026_inference_provenance.py", "model.py"]
@@ -26,6 +27,37 @@ DGX_SUPPORT = [
     "run_inference_shard.sh", "run_mosaic_host.sh", "validate_dgx_bundle.py",
 ]
 GENERIC_SUPPORT = ["build_archive_manifests.py", "make_tile_shards.py", "resolve_production_candidate.py"]
+
+
+def visual_review_template() -> dict:
+    """Return a deliberately non-approving five-host review specification."""
+    eastern_focus = ["New York", "NY-PA acquisition boundary"]
+    western_focus = ["CA-OR boundary", "southern Oregon", "Gold Beach"]
+    reviews = []
+    for host in sorted(HOSTS):
+        reviews.append({
+            "host": host,
+            "decision": "pending",
+            "checks": {target: "pending" for target in sorted(REVIEW_TARGETS)},
+            "observations": "",
+            "diagnostic_focus": (
+                western_focus
+                if host == "notholithocarpus_densiflorus"
+                else eastern_focus
+            ),
+        })
+    return {
+        "status": "template_pending_human_review",
+        "reviewer": "",
+        "reviewed_at": "",
+        "instructions": (
+            "Populate reviewer and timezone-aware reviewed_at, inspect every fixed-scale "
+            "quickview and listed diagnostic domain, change each check to pass or "
+            "pass_with_note, record substantive observations, and set decision to "
+            "approved only when scientifically warranted. This template is not approval."
+        ),
+        "reviews": reviews,
+    }
 
 
 def validate_mc_lineage(
@@ -100,6 +132,9 @@ def prepare_bundle(registry: Path, acceptance_summary: Path, mc_stability_summar
     }
     for name, source in copies.items():
         target = output_dir / name; shutil.copy2(source, target); hashes[name] = sha256(target)
+    review_template_path = output_dir / "visual_review_spec_template.json"
+    write_json_atomic(review_template_path, visual_review_template())
+    hashes[review_template_path.name] = sha256(review_template_path)
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=code_root, check=True, capture_output=True, text=True).stdout.strip()
     payload = {
         "status": "complete", "bundle_type": "accepted_august2026_dgx_hann_inference",

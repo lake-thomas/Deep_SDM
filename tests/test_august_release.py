@@ -45,7 +45,10 @@ import august2026_run_ailanthus_blockcv_stage as ailanthus_blockcv_stage
 import august2026_run_ailanthus_production_stage as ailanthus_production_stage
 import august2026_run_ailanthus_five_host_promotion as ailanthus_five_host_promotion
 import august2026_run_mc_stability_stage as mc_stability_stage
-from august2026_prepare_dgx_inference_bundle import validate_mc_lineage
+from august2026_prepare_dgx_inference_bundle import (
+    validate_mc_lineage,
+    visual_review_template,
+)
 from august2026_release_evidence import (
     _index_dgx_run_chain,
     assemble_release_evidence,
@@ -92,6 +95,19 @@ def write_minimal_hazel_bundle(bundle: Path, registry: Path | None = None) -> No
 
 
 class AugustVisualReviewTests(unittest.TestCase):
+    def test_dgx_visual_review_template_is_complete_but_non_approving(self):
+        template = visual_review_template()
+        self.assertEqual(template["status"], "template_pending_human_review")
+        self.assertEqual(template["reviewer"], "")
+        self.assertEqual(template["reviewed_at"], "")
+        reviews = template["reviews"]
+        self.assertEqual({item["host"] for item in reviews}, HOSTS)
+        self.assertTrue(all(item["decision"] == "pending" for item in reviews))
+        self.assertTrue(all(set(item["checks"]) == REVIEW_TARGETS for item in reviews))
+        self.assertTrue(
+            all(set(item["checks"].values()) == {"pending"} for item in reviews)
+        )
+
     def test_aligned_june_reference_keeps_nonoverlap_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
