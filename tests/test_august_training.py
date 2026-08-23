@@ -62,7 +62,10 @@ from august2026_ailanthus_production_train import (
     replacement_name as replacement_production_name,
 )
 from august2026_mc_stability_evidence import PairAccumulator, advancement_rule
-from august2026_mc_stability_screen import experiment_name as mc_experiment_name
+from august2026_mc_stability_screen import (
+    experiment_name as mc_experiment_name,
+    run_design as run_mc_design,
+)
 from august2026_combine_dataset_screen_evidence import HOSTS, combine_evidence
 from august2026_inference_output_qa import validate_triplet
 from august2026_prepare_mosaic_inputs import prepare_inputs
@@ -434,6 +437,24 @@ class AugustExperimentDesignTests(unittest.TestCase):
             with patch("august2026_experiments.subprocess.run", side_effect=dirty):
                 with self.assertRaisesRegex(RuntimeError, "clean=False"):
                     assert_frozen_runtime_identity(registry)
+
+    def test_mc_matrix_checks_frozen_identity_before_marking_row_running(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            registry = root / "experiment_registry.tsv"
+            row = {
+                "experiment": "mc_identity_test",
+                "run_dir": str(root / "output"),
+                "status": "pending",
+            }
+            with patch(
+                "august2026_mc_stability_screen.assert_frozen_runtime_identity",
+                side_effect=RuntimeError("changed runtime identity"),
+            ) as identity:
+                with self.assertRaisesRegex(RuntimeError, "changed runtime identity"):
+                    run_mc_design(registry, [row], resume_completed=False)
+            identity.assert_called_once_with(registry)
+            self.assertEqual(row["status"], "pending")
 
     def test_mc_stability_rule_combines_absolute_and_repeat_noise_floors(self):
         passed = advancement_rule(0.004, 0.002, 0.999, 0.98, 0.001, 0.001)

@@ -13,7 +13,13 @@ from pathlib import Path
 import pandas as pd
 
 from august2026_combine_dataset_screen_evidence import HOSTS
-from august2026_experiments import read_json, sha256, write_json_atomic, write_tsv_atomic
+from august2026_experiments import (
+    assert_frozen_runtime_identity,
+    read_json,
+    sha256,
+    write_json_atomic,
+    write_tsv_atomic,
+)
 from august2026_mc_stability_evidence import PASS_LEVELS, REPLICATE_SEEDS
 
 
@@ -250,6 +256,10 @@ def run_design(registry_path: Path, rows: list[dict], resume_completed: bool) ->
             continue
         if output.exists() and any(output.iterdir()) and not resume_completed:
             raise FileExistsError(f"Refusing partial MC output: {output}")
+        # This matrix contains 40 sequential inference jobs and can run long
+        # enough for the active worktree to change between rows. Keep every
+        # result on the exact code identity frozen in design metadata.
+        assert_frozen_runtime_identity(registry_path)
         row["status"] = "running"
         _write_registry(registry_path, rows)
         log_path = logs / f"{row['experiment']}.log"
