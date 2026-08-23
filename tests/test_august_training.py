@@ -49,6 +49,7 @@ from august2026_ailanthus_blockcv import replacement_name
 from august2026_ailanthus_production_train import (
     replacement_name as replacement_production_name,
 )
+from august2026_mc_stability_evidence import PairAccumulator, advancement_rule
 from august2026_combine_dataset_screen_evidence import HOSTS, combine_evidence
 from august2026_inference_output_qa import validate_triplet
 from august2026_prepare_mosaic_inputs import prepare_inputs
@@ -246,6 +247,24 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_mc_stability_rule_combines_absolute_and_repeat_noise_floors(self):
+        passed = advancement_rule(0.004, 0.002, 0.999, 0.98, 0.001, 0.001)
+        self.assertTrue(passed["stability_gate_passed"])
+        self.assertEqual(passed["prediction_mae_maximum"], 0.005)
+        failed = advancement_rule(0.006, 0.002, 0.999, 0.98, 0.001, 0.001)
+        self.assertFalse(failed["stability_gate_passed"])
+        noise_scaled = advancement_rule(0.01, 0.005, 0.999, 0.98, 0.01, 0.005)
+        self.assertTrue(noise_scaled["stability_gate_passed"])
+
+    def test_mc_pair_accumulator_streams_exact_metrics(self):
+        accumulator = PairAccumulator()
+        accumulator.add(np.array([1.0, 2.0]), np.array([1.0, 3.0]))
+        accumulator.add(np.array([4.0]), np.array([5.0]))
+        metrics = accumulator.metrics()
+        self.assertEqual(metrics["pixel_count"], 3)
+        self.assertAlmostEqual(metrics["mae"], 2 / 3)
+        self.assertAlmostEqual(metrics["rmse"], np.sqrt(2 / 3))
+
     def test_ailanthus_replacement_blockcv_name_is_isolated(self):
         selection = {
             "arm": "domain_balanced",
