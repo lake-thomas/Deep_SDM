@@ -19,7 +19,11 @@ from calibration_utils import (
     derive_mcc_threshold,
     fit_platt_calibrator,
 )
-from august2026_experiments import filter_specs, stage_specs
+from august2026_experiments import (
+    assert_frozen_runtime_identity,
+    filter_specs,
+    stage_specs,
+)
 from august2026_compare_artifact_probe import (
     exact_pair_merge,
     paired_comparison,
@@ -398,6 +402,39 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_sequential_launcher_rechecks_frozen_identity_before_each_fit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            design = Path(temp_dir)
+            registry = design / "experiment_registry.tsv"
+            registry.touch()
+            (design / "design_metadata.json").write_text(
+                json.dumps({"code_commit": "frozen123", "code_dirty": False}),
+                encoding="utf-8",
+            )
+
+            clean = [
+                subprocess.CompletedProcess([], 0, stdout="frozen123\n"),
+                subprocess.CompletedProcess([], 0, stdout=""),
+            ]
+            with patch("august2026_experiments.subprocess.run", side_effect=clean):
+                assert_frozen_runtime_identity(registry)
+
+            changed = [
+                subprocess.CompletedProcess([], 0, stdout="later456\n"),
+                subprocess.CompletedProcess([], 0, stdout=""),
+            ]
+            with patch("august2026_experiments.subprocess.run", side_effect=changed):
+                with self.assertRaisesRegex(RuntimeError, "changed runtime identity"):
+                    assert_frozen_runtime_identity(registry)
+
+            dirty = [
+                subprocess.CompletedProcess([], 0, stdout="frozen123\n"),
+                subprocess.CompletedProcess([], 0, stdout=" M main.py\n"),
+            ]
+            with patch("august2026_experiments.subprocess.run", side_effect=dirty):
+                with self.assertRaisesRegex(RuntimeError, "clean=False"):
+                    assert_frozen_runtime_identity(registry)
+
     def test_mc_stability_rule_combines_absolute_and_repeat_noise_floors(self):
         passed = advancement_rule(0.004, 0.002, 0.999, 0.98, 0.001, 0.001)
         self.assertTrue(passed["stability_gate_passed"])

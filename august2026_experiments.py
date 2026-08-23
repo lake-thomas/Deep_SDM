@@ -110,6 +110,42 @@ def read_json(path: Path) -> dict:
         return json.load(stream)
 
 
+def assert_frozen_runtime_identity(registry: Path) -> None:
+    """Require every sequential fit to start from the frozen design identity."""
+    metadata_path = registry.parent / "design_metadata.json"
+    if not metadata_path.is_file():
+        raise FileNotFoundError(
+            f"Missing frozen design metadata beside registry: {metadata_path}"
+        )
+    metadata = read_json(metadata_path)
+    expected_commit = str(metadata.get("code_commit", "")).strip()
+    if not expected_commit:
+        raise ValueError(f"Frozen design lacks code_commit: {metadata_path}")
+    if metadata.get("code_dirty") is not False:
+        raise ValueError(f"Frozen design was not created from a clean tree: {metadata_path}")
+
+    observed_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=CODE_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    observed_dirty = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=CODE_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if observed_commit != expected_commit or observed_dirty:
+        raise RuntimeError(
+            "Refusing training from a changed runtime identity: "
+            f"expected commit={expected_commit} clean=True; "
+            f"observed commit={observed_commit} clean={not bool(observed_dirty)}"
+        )
+
+
 def write_json_atomic(path: Path, payload) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(f"{path.name}.partial")
@@ -393,6 +429,11 @@ def run_experiments(registry: Path, rows: list[dict], max_runs: int | None) -> N
             continue
         if run_dir.exists() and any(run_dir.iterdir()):
             raise FileExistsError(f"Refusing to reuse partial run directory: {run_dir}")
+
+        # Re-check immediately before every fit, not merely when the design is
+        # written. A sequential screen can span hours, during which the active
+        # worktree may otherwise advance between candidates.
+        assert_frozen_runtime_identity(registry)
 
         log_path = registry.parent / "logs" / f"{row['experiment']}.log"
         if log_path.exists():
