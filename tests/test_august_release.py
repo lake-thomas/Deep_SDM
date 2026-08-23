@@ -471,6 +471,17 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
         self.assertNotIn("sbatch", text)
         self.assertNotIn("SLURM_", text)
 
+    def test_dgx_design_prepares_state_domain_smoke_and_full_shards_locally(self):
+        script = Path(__file__).resolve().parents[1] / "dgx_august2026" / "prepare_inference_design.sh"
+        text = script.read_text(encoding="utf-8")
+        self.assertIn("east_of_mississippi tanoak_ca_or", text)
+        self.assertIn("SMOKE_PER_STATE", text)
+        self.assertIn("FULL_SHARD_SIZE", text)
+        self.assertIn("build_archive_manifests.py", text)
+        self.assertIn("make_tile_shards.py", text)
+        self.assertNotIn("sbatch", text)
+        self.assertNotIn("SLURM_", text)
+
     def test_hazel_submission_gate_rejects_changed_bundle_and_qa_identity(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
