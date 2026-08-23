@@ -14,6 +14,10 @@ from august2026_summarize_experiments import read_json, sha256, write_json_atomi
 
 
 HOST = "ailanthus_altissima"
+ALLOWED_SCREEN_STAGES = {
+    "ailanthus-robustness-screen",
+    "ailanthus-radiometric-consistency-screen",
+}
 
 
 def strict_bool(value, name: str) -> bool:
@@ -42,7 +46,7 @@ def freeze_selection(
     evidence_path = Path(summary.get("candidate_evidence", ""))
     if (
         summary.get("status") != "complete"
-        or summary.get("stage") != "ailanthus-robustness-screen"
+        or summary.get("stage") not in ALLOWED_SCREEN_STAGES
         or not evidence_path.is_file()
         or sha256(evidence_path) != summary.get("candidate_evidence_sha256")
     ):
@@ -86,10 +90,12 @@ def freeze_selection(
         "spatial_augmentation": row["spatial_augmentation"],
         "radiometric_augmentation": config["radiometric_augmentation"],
         "radiometric_recipe": spec["radiometric_recipe"],
+        "radiometric_consistency": config.get("radiometric_consistency", False),
         "dropout": float(row["dropout"]),
         "label_smoothing": float(row["label_smoothing"]),
         "seed": int(spec.get("seed", config.get("seed", 42))),
         "source_experiment": experiment,
+        "source_screen_stage": summary["stage"],
         "source_config": str(config_path.resolve()),
         "source_config_sha256": actual["config"],
         "source_checkpoint": str(checkpoint_path.resolve()),

@@ -28,9 +28,16 @@ def replacement_name(selection: dict, fold: int) -> str:
     rad = selection.get("radiometric_recipe")
     if rad not in {"rad1", "rad2"}:
         rad = "rad1" if isinstance(selection["radiometric_augmentation"], dict) else "rad0"
+    consistency = selection.get("radiometric_consistency", False)
+    consistency_suffix = ""
+    if isinstance(consistency, dict) and consistency.get("enabled", True):
+        weight = float(consistency["weight"])
+        consistency_suffix = f"_consw{int(round(weight * 100)):03d}"
+    elif consistency:
+        consistency_suffix = "_consw100"
     return (
         f"stage05b_{HOST}_{arm}_bg{int(selection['background_target']):05d}_"
-        f"posw_{rad}_d{int(round(selection['dropout'] * 100)):03d}_"
+        f"posw_{rad}{consistency_suffix}_d{int(round(selection['dropout'] * 100)):03d}_"
         f"s{int(round(selection['label_smoothing'] * 100)):03d}_"
         f"blockcv{fold}_{DATE_TAG}"
     )

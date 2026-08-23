@@ -75,6 +75,8 @@ def validate_selection(selection: dict) -> dict:
         "dropout": selection["dropout"],
         "label_smoothing": selection["label_smoothing"],
     }
+    if "radiometric_consistency" in selection:
+        recipe["radiometric_consistency"] = selection["radiometric_consistency"]
     mismatches = {
         key: {"expected": value, "found": config.get(key)}
         for key, value in recipe.items()
@@ -183,6 +185,11 @@ def build_config(
             ),
         }
     )
+    if "radiometric_consistency" in selection:
+        config["radiometric_consistency"] = selection["radiometric_consistency"]
+        config["august_experiment_spec"]["radiometric_consistency"] = selection[
+            "radiometric_consistency"
+        ]
     return config
 
 

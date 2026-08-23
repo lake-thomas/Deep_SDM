@@ -432,6 +432,16 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertTrue(all(name.startswith("stage05b_ailanthus_altissima_") for name in names))
         self.assertTrue(all("_rad2_" in name for name in names))
 
+        consistency_selection = {
+            **selection,
+            "radiometric_consistency": {"enabled": True, "weight": 2.0},
+        }
+        consistency_names = [
+            replacement_name(consistency_selection, fold) for fold in range(1, 6)
+        ]
+        self.assertTrue(all("_rad2_consw200_" in name for name in consistency_names))
+        self.assertTrue(set(names).isdisjoint(consistency_names))
+
     def test_ailanthus_replacement_production_name_preserves_lineage(self):
         selection = {
             "arm": "domain_balanced",
@@ -445,6 +455,10 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertIn("production_replacement_ailanthus_altissima", name)
         self.assertIn("_rad2_", name)
         self.assertIn("_platt_", name)
+        selection["radiometric_consistency"] = {"enabled": True, "weight": 0.5}
+        consistency_name = replacement_production_name(selection)
+        self.assertIn("_rad2_consw050_", consistency_name)
+        self.assertNotEqual(name, consistency_name)
 
     def test_ailanthus_robustness_advancement_gates_are_conjunctive(self):
         import pandas as pd

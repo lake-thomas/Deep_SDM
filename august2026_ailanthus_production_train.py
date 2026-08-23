@@ -34,9 +34,16 @@ def replacement_name(selection: dict) -> str:
     calibration = (
         "platt" if selection["production_postfit_calibration"] == "platt" else "raw"
     )
+    consistency = selection.get("radiometric_consistency", False)
+    consistency_suffix = ""
+    if isinstance(consistency, dict) and consistency.get("enabled", True):
+        weight = float(consistency["weight"])
+        consistency_suffix = f"_consw{int(round(weight * 100)):03d}"
+    elif consistency:
+        consistency_suffix = "_consw100"
     return (
         f"production_replacement_{HOST}_{arm}_"
-        f"bg{int(selection['background_target']):05d}_posw_{rad}_"
+        f"bg{int(selection['background_target']):05d}_posw_{rad}{consistency_suffix}_"
         f"d{int(round(selection['dropout'] * 100)):03d}_"
         f"s{int(round(selection['label_smoothing'] * 100)):03d}_"
         f"{calibration}_{DATE_TAG}"
