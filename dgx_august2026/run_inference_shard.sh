@@ -35,6 +35,9 @@ candidate_env="${STATUS_DIR}/shard_${SHARD_ID}_candidate.env"
 source "${candidate_env}"
 
 bundle_metadata="${BUNDLE_ROOT}/bundle_metadata.json"
+registry_sha256="$(sha256sum "${PRODUCTION_REGISTRY}" | awk '{print $1}')"
+bundle_metadata_sha256="$(sha256sum "${bundle_metadata}" | awk '{print $1}')"
+tile_list_sha256="$(sha256sum "${TILE_LIST}" | awk '{print $1}')"
 base_seed="$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["inference_defaults"]["base_seed"])' "${bundle_metadata}")"
 mc_samples=1
 if [[ "${PRODUCT}" == "uncertainty" ]]; then
@@ -76,5 +79,5 @@ uncertainty_count="$(find "${OUT_DIR}" -maxdepth 1 -name '*_uncertainty.tif' | w
 count_count="$(find "${OUT_DIR}" -maxdepth 1 -name '*_count.tif' | wc -l | tr -d ' ')"
 status=completed; if [[ "${rc}" -ne 0 ]]; then status=failed; fi
 completed_at="$(date -Is)"
-printf '{"status":"%s","returncode":%s,"host":"%s","region":"%s","product":"%s","shard_id":"%s","tile_list":"%s","expected_tile_count":%s,"output_dir":"%s","prediction_count":%s,"uncertainty_count":%s,"count_count":%s,"base_seed":%s,"mc_samples":%s,"started_at":"%s","completed_at":"%s","log_file":"%s","experiment":"%s"}\n' "${status}" "${rc}" "${HOST_SLUG}" "${REGION}" "${PRODUCT}" "${SHARD_ID}" "${TILE_LIST}" "${expected_count}" "${OUT_DIR}" "${prediction_count}" "${uncertainty_count}" "${count_count}" "${base_seed}" "${mc_samples}" "${started_at}" "${completed_at}" "${log_file}" "${EXPERIMENT}" > "${status_json}"
+printf '{"status":"%s","returncode":%s,"host":"%s","region":"%s","product":"%s","shard_id":"%s","tile_list":"%s","tile_list_sha256":"%s","expected_tile_count":%s,"output_dir":"%s","prediction_count":%s,"uncertainty_count":%s,"count_count":%s,"base_seed":%s,"mc_samples":%s,"production_registry_sha256":"%s","bundle_metadata_sha256":"%s","started_at":"%s","completed_at":"%s","log_file":"%s","experiment":"%s"}\n' "${status}" "${rc}" "${HOST_SLUG}" "${REGION}" "${PRODUCT}" "${SHARD_ID}" "${TILE_LIST}" "${tile_list_sha256}" "${expected_count}" "${OUT_DIR}" "${prediction_count}" "${uncertainty_count}" "${count_count}" "${base_seed}" "${mc_samples}" "${registry_sha256}" "${bundle_metadata_sha256}" "${started_at}" "${completed_at}" "${log_file}" "${EXPERIMENT}" > "${status_json}"
 exit "${rc}"

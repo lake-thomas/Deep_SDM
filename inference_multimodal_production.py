@@ -1055,6 +1055,7 @@ def run_inference_on_tile(
             "blend_window": blend_window,
             "score_space": score_space,
             "inference_seed": str(inference_seed),
+            "mc_samples": str(int(mc_samples)),
         }
         if weighted_blend:
             expected_tags["blend_edge_floor"] = f"{float(blend_edge_floor):.8g}"
@@ -1080,6 +1081,7 @@ def run_inference_on_tile(
             "score_space": score_space,
             "platt_calibrator_sha256": platt_calibrator_sha256,
             "inference_seed": inference_seed,
+            "mc_samples": int(mc_samples),
         }
 
     if req["env"] and (wc_rasters is None or ghm_raster is None):
@@ -1303,6 +1305,7 @@ def run_inference_on_tile(
             "blend_window": blend_window,
             "score_space": score_space,
             "inference_seed": str(inference_seed),
+            "mc_samples": str(int(mc_samples)),
         }
         if weighted_blend:
             blend_tags["blend_edge_floor"] = f"{float(blend_edge_floor):.8g}"
@@ -1365,6 +1368,7 @@ def run_inference_on_tile(
         "score_space": score_space,
         "platt_calibrator_sha256": platt_calibrator_sha256,
         "inference_seed": inference_seed,
+        "mc_samples": int(mc_samples),
         "elapsed_seconds": elapsed,
     }
     print(

@@ -41,6 +41,7 @@ def validate_triplet(
     expected_calibrator_sha256: str | None,
     product: str,
     expected_inference_seed: int | None = None,
+    expected_mc_samples: int | None = None,
 ) -> dict:
     failures = []
     with (
@@ -70,6 +71,8 @@ def validate_triplet(
         }
         if expected_inference_seed is not None:
             expected_tags["inference_seed"] = str(int(expected_inference_seed))
+        if expected_mc_samples is not None:
+            expected_tags["mc_samples"] = str(int(expected_mc_samples))
         if expected_calibrator_sha256 is not None:
             expected_tags["platt_calibrator_sha256"] = expected_calibrator_sha256
         for label, raster in (
@@ -162,6 +165,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-calibrator-sha256", default=None)
     parser.add_argument("--product", choices=["deterministic", "uncertainty"], required=True)
     parser.add_argument("--base-seed", type=int, default=42)
+    parser.add_argument("--expected-mc-samples", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -206,6 +210,7 @@ def main() -> None:
                     args.expected_calibrator_sha256,
                     args.product,
                     derive_tile_seed(args.base_seed, tile),
+                    args.expected_mc_samples,
                 )
             )
         failed_tiles = [row for row in rows if not row["passed"]]
@@ -229,6 +234,8 @@ def main() -> None:
         "expected_score_space": args.expected_score_space,
         "expected_calibrator_sha256": args.expected_calibrator_sha256,
         "base_seed": args.base_seed,
+        "expected_mc_samples": args.expected_mc_samples,
+        "output_root": str(args.output_root.resolve()),
         "failure_count": len(failures),
         "failures": failures,
         "tile_output_qa": str(detail_path.resolve()),

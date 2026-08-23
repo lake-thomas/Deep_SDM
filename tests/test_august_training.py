@@ -416,6 +416,7 @@ class AugustExperimentDesignTests(unittest.TestCase):
                 "blend_edge_floor": "0.05",
                 "score_space": "raw_sigmoid_probability",
                 "inference_seed": "123",
+                "mc_samples": "1",
             }
             for suffix, dtype, nodata, values in (
                 ("prediction", "float32", -9999.0, np.full((8, 8), 0.4, np.float32)),
@@ -436,6 +437,7 @@ class AugustExperimentDesignTests(unittest.TestCase):
                 None,
                 "deterministic",
                 123,
+                1,
             )
             self.assertTrue(result["passed"], result["failures"])
 

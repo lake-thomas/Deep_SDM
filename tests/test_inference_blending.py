@@ -172,6 +172,7 @@ class BlendWindowIntegrationTests(unittest.TestCase):
         self.assertIsNone(default[0]["blend_edge_floor"])
         self.assertEqual(default[4]["blend_window"], "flat")
         self.assertEqual(default[4]["inference_seed"], "42")
+        self.assertEqual(default[4]["mc_samples"], "1")
         self.assertNotIn("blend_edge_floor", default[4])
 
     def test_hann_preserves_support_and_count_geometry(self):

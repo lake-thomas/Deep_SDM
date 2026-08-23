@@ -112,13 +112,16 @@ def write_csv_atomic(path: Path, frame: pd.DataFrame) -> None:
     os.replace(partial, path)
 
 
-def _read_layer(path: Path, expected_seed: int) -> tuple[np.ndarray, tuple]:
+def _read_layer(
+    path: Path, expected_seed: int, expected_mc_samples: int
+) -> tuple[np.ndarray, tuple]:
     with rasterio.open(path) as source:
         tags = source.tags()
         expected_tags = {
             "blend_window": "hann",
             "blend_edge_floor": "0.05",
             "inference_seed": str(expected_seed),
+            "mc_samples": str(int(expected_mc_samples)),
         }
         mismatches = {
             key: {"expected": value, "found": tags.get(key)}
@@ -192,10 +195,12 @@ def synthesize_evidence(manifest: Path, output_dir: Path) -> dict:
             for record in tile_frame.to_dict("records"):
                 expected_seed = derive_tile_seed(record["replicate_seed"], tile_path)
                 prediction, prediction_geometry = _read_layer(
-                    Path(record["prediction"]), expected_seed
+                    Path(record["prediction"]), expected_seed,
+                    record["mc_samples"],
                 )
                 uncertainty, uncertainty_geometry = _read_layer(
-                    Path(record["uncertainty"]), expected_seed
+                    Path(record["uncertainty"]), expected_seed,
+                    record["mc_samples"],
                 )
                 if prediction_geometry != uncertainty_geometry:
                     raise ValueError(f"Prediction/uncertainty geometry differs: {host}:{tile_id}")
