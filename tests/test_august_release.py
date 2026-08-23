@@ -42,6 +42,7 @@ from august2026_run_ailanthus_replacement_acceptance import (
     probe_commands as replacement_probe_commands,
 )
 import august2026_run_ailanthus_blockcv_stage as ailanthus_blockcv_stage
+import august2026_run_ailanthus_production_stage as ailanthus_production_stage
 from august2026_release_evidence import (
     _index_dgx_run_chain,
     assemble_release_evidence,
@@ -337,6 +338,58 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_ailanthus_production_stage_runs_fit_before_acceptance(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            blockcv = root / "blockcv"
+            blockcv.mkdir()
+            blockcv_summary = blockcv / "summary.json"
+            write_json(blockcv_summary, {"status": "complete"})
+            selection = root / "production_selection.json"
+            write_json(selection, {
+                "blockcv_evidence_dir": str(blockcv),
+                "blockcv_evidence_summary_sha256": sha256(blockcv_summary),
+            })
+            registry = root / "design" / "experiment_registry.tsv"
+            rows = [{"experiment": "production"}]
+            calls = []
+
+            def record_training(observed_registry, observed_rows, max_runs):
+                calls.append(("training", observed_registry, observed_rows, max_runs))
+
+            def record_acceptance(*args):
+                calls.append(("acceptance", args))
+                return {"status": "complete", "production_ready": True}
+
+            with (
+                patch.object(
+                    ailanthus_production_stage, "PRODUCTION_OUTPUT_ROOT",
+                    root / "outputs",
+                ),
+                patch.object(
+                    ailanthus_production_stage, "write_design",
+                    return_value=(registry, rows),
+                ),
+                patch.object(
+                    ailanthus_production_stage, "run_experiments",
+                    side_effect=record_training,
+                ),
+                patch.object(
+                    ailanthus_production_stage, "run_acceptance",
+                    side_effect=record_acceptance,
+                ),
+            ):
+                result = ailanthus_production_stage.run_stage(
+                    selection, blockcv, "cuda", 64, True
+                )
+
+            self.assertTrue(result["production_ready"])
+            self.assertEqual([item[0] for item in calls], ["training", "acceptance"])
+            self.assertEqual(calls[0][1:], (registry, rows, None))
+            acceptance_args = calls[1][1]
+            self.assertEqual(acceptance_args[0:2], (registry, blockcv))
+            self.assertEqual(acceptance_args[3:], ("cuda", 64, True))
+
     def test_ailanthus_blockcv_stage_runs_folds_before_evidence(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
