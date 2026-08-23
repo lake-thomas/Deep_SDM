@@ -21,6 +21,15 @@ class MeanImageModel(torch.nn.Module):
         return batch["image"].mean(dim=(1, 2, 3))
 
 
+class DropoutMeanImageModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.dropout = torch.nn.Dropout(p=0.5)
+
+    def forward_from_batch(self, batch):
+        return self.dropout(batch["image"]).mean(dim=(1, 2, 3))
+
+
 class BlendWindowUnitTests(unittest.TestCase):
     def test_flat_window_is_all_ones(self):
         weight = inference.make_blend_weight(5, mode="flat", edge_floor=-1.0)
@@ -223,6 +232,31 @@ class BlendWindowIntegrationTests(unittest.TestCase):
                 },
                 platt_calibrator_sha256="changed-calibrator",
             )
+
+    def test_mc_dropout_rasters_are_reproducible_per_tile_seed(self):
+        arguments = {
+            **self.arguments,
+            "model": DropoutMeanImageModel(),
+            "mc_samples": 4,
+        }
+        outputs = []
+        for name, seed in (("seed_a", 123), ("seed_a_repeat", 123), ("seed_b", 124)):
+            output = self.root / name
+            inference.run_inference_on_tile(
+                output_dir=output,
+                inference_seed=seed,
+                blend_window="hann",
+                **arguments,
+            )
+            with rasterio.open(output / f"{self.tile.stem}_prediction.tif") as source:
+                prediction = source.read(1)
+            with rasterio.open(output / f"{self.tile.stem}_uncertainty.tif") as source:
+                uncertainty = source.read(1)
+            outputs.append((prediction, uncertainty))
+        np.testing.assert_array_equal(outputs[0][0], outputs[1][0])
+        np.testing.assert_array_equal(outputs[0][1], outputs[1][1])
+        self.assertFalse(np.array_equal(outputs[0][0], outputs[2][0]))
+        self.assertFalse(np.array_equal(outputs[0][1], outputs[2][1]))
 
 
 if __name__ == "__main__":
