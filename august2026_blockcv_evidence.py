@@ -111,11 +111,14 @@ def synthesize_blockcv(
     selection_manifest: Path,
     training_metrics_path: Path,
     output_dir: Path,
+    expected_hosts: set[str] | None = None,
+    expected_selection_type: str = "recipe_for_blockcv",
 ) -> dict:
+    expected_hosts = HOSTS if expected_hosts is None else expected_hosts
     selection = read_json(selection_manifest)
     if (
         selection.get("status") != "complete"
-        or selection.get("selection_type") != "recipe_for_blockcv"
+        or selection.get("selection_type") != expected_selection_type
     ):
         raise RuntimeError("Selection manifest is not approved for BlockCV evidence")
     selections = selection.get("selections") or []
@@ -137,10 +140,13 @@ def synthesize_blockcv(
 
     summary_rows = []
     hard_failures = []
-    expected_hosts = {item["host"] for item in selections}
-    if expected_hosts != HOSTS:
-        raise ValueError("BlockCV evidence requires exactly the five production hosts")
-    if set(metrics["host"]) != expected_hosts:
+    selected_hosts = {item["host"] for item in selections}
+    if selected_hosts != expected_hosts:
+        raise ValueError(
+            "BlockCV selected host set differs from the expected host set: "
+            f"selected={sorted(selected_hosts)}, expected={sorted(expected_hosts)}"
+        )
+    if set(metrics["host"]) != selected_hosts:
         raise ValueError("BlockCV host set differs from the selected recipes")
     for item in selections:
         host = item["host"]
@@ -194,7 +200,7 @@ def synthesize_blockcv(
         "selection_manifest_sha256": sha256(selection_manifest),
         "training_metrics": str(training_metrics_path.resolve()),
         "training_metrics_sha256": sha256(training_metrics_path),
-        "host_count": len(expected_hosts),
+        "host_count": len(selected_hosts),
         "expected_fold_count_per_host": 5,
         "hard_failure_count": len(hard_failures),
         "hard_failures": hard_failures,
