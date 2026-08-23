@@ -435,10 +435,26 @@ def main():
     else:
         consistency_enabled = bool(consistency)
         consistency_weight = 1.0 if consistency_enabled else 0.0
+    image_modality_dropout_probability = float(
+        config.get("image_modality_dropout_probability", 0.0)
+    )
     if consistency_weight < 0:
         raise ValueError("radiometric consistency weight must be non-negative")
     if consistency_enabled and consistency_weight == 0:
         raise ValueError("enabled radiometric consistency requires positive weight")
+    if not 0 <= image_modality_dropout_probability < 1:
+        raise ValueError("image modality dropout probability must be in [0, 1)")
+    if image_modality_dropout_probability > 0 and not (
+        req["image"] and (req["env"] or req["topo"])
+    ):
+        raise ValueError(
+            "image modality dropout requires an image-plus-nonimage multimodal model"
+        )
+    if image_modality_dropout_probability > 0 and consistency_enabled:
+        raise ValueError(
+            "image modality dropout and radiometric consistency must be screened "
+            "independently"
+        )
     pos_weight = (
         float(train_counts.loc[0] / train_counts.loc[1])
         if loss_strategy == "pos_weight_bce"
@@ -448,6 +464,7 @@ def main():
         pos_weight=pos_weight,
         label_smoothing=label_smoothing,
         radiometric_consistency_weight=consistency_weight,
+        image_modality_dropout_probability=image_modality_dropout_probability,
     )
     dataset_sha256 = hashlib.sha256(Path(config["csv_path"]).read_bytes()).hexdigest()
     training_design = {
@@ -481,6 +498,13 @@ def main():
             "paired_view_rule": (
                 "shared exact spatial view with two independent bounded radiometric views"
             ),
+        },
+        "image_modality_dropout": {
+            "enabled": image_modality_dropout_probability > 0,
+            "probability": image_modality_dropout_probability,
+            "mask_unit": "complete_image_embedding_per_training_sample",
+            "retained_embedding_scaling": "inverted_dropout",
+            "validation_test_inference": "disabled_full_image_pathway",
         },
         "seed": seed,
     }

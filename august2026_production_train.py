@@ -63,6 +63,10 @@ def validate_selection(selection: dict) -> dict:
     }
     if "radiometric_consistency" in selection:
         expected["radiometric_consistency"] = selection["radiometric_consistency"]
+    if "image_modality_dropout_probability" in selection:
+        expected["image_modality_dropout_probability"] = selection[
+            "image_modality_dropout_probability"
+        ]
     mismatches = {
         key: {"expected": value, "found": config.get(key)}
         for key, value in expected.items()
@@ -131,6 +135,13 @@ def build_config(
         config["august_experiment_spec"]["radiometric_consistency"] = selection[
             "radiometric_consistency"
         ]
+    if "image_modality_dropout_probability" in selection:
+        config["image_modality_dropout_probability"] = selection[
+            "image_modality_dropout_probability"
+        ]
+        config["august_experiment_spec"][
+            "image_modality_dropout_probability"
+        ] = selection["image_modality_dropout_probability"]
     return config
 
 

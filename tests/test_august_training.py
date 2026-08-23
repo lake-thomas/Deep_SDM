@@ -54,6 +54,11 @@ from august2026_ailanthus_consistency_screen import (
     build_config as build_ailanthus_consistency_config,
     experiment_name as ailanthus_consistency_experiment_name,
 )
+from august2026_ailanthus_modality_dropout_screen import (
+    MODALITY_DROPOUT_PROBABILITIES,
+    build_config as build_ailanthus_modality_dropout_config,
+    experiment_name as ailanthus_modality_dropout_experiment_name,
+)
 from august2026_freeze_ailanthus_robustness_selection import (
     freeze_selection as freeze_ailanthus_screen_selection,
 )
@@ -120,6 +125,26 @@ class _DummyPairedImageModel(HostModelBase):
 
 
 class AugustLossTests(unittest.TestCase):
+    def test_image_modality_dropout_masks_whole_embeddings_training_only(self):
+        model = _DummyBinaryModel()
+        model.configure_training_loss(image_modality_dropout_probability=0.5)
+        features = torch.ones((4, 3))
+        draws = torch.tensor([[0.1], [0.6], [0.2], [0.9]])
+        model.train()
+        with patch("model.torch.rand", return_value=draws):
+            observed = model.apply_image_modality_dropout(features)
+        expected = torch.tensor([
+            [0.0, 0.0, 0.0],
+            [2.0, 2.0, 2.0],
+            [0.0, 0.0, 0.0],
+            [2.0, 2.0, 2.0],
+        ])
+        self.assertTrue(torch.equal(observed, expected))
+        model.eval()
+        self.assertTrue(torch.equal(model.apply_image_modality_dropout(features), features))
+        with self.assertRaisesRegex(ValueError, "in \[0, 1\)"):
+            model.configure_training_loss(image_modality_dropout_probability=1.0)
+
     def test_paired_radiometric_consistency_adds_probability_mse(self):
         model = _DummyPairedImageModel()
         model.configure_training_loss(radiometric_consistency_weight=2.0)
@@ -244,6 +269,88 @@ class CalibrationTests(unittest.TestCase):
 
 
 class AugustEndToEndSmokeTests(unittest.TestCase):
+    def test_image_tabular_training_records_modality_dropout(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_path = root / "chip.tif"
+            image = np.stack([
+                np.full((64, 64), value, dtype=np.uint8)
+                for value in (40, 80, 120, 160)
+            ])
+            with rasterio.open(
+                image_path,
+                "w",
+                driver="GTiff",
+                height=64,
+                width=64,
+                count=4,
+                dtype="uint8",
+                crs="EPSG:5070",
+                transform=rasterio.transform.from_origin(0, 64, 1, 1),
+            ) as target:
+                target.write(image)
+            rows = []
+            for split in ("train", "val", "test"):
+                for index in range(4):
+                    rows.append({
+                        "sample_id": f"{split}_{index}",
+                        "split": split,
+                        "presence": index % 2,
+                        "lat": 35.0,
+                        "lon": -78.0,
+                        "chip_path": str(image_path),
+                        "bio_1": float(index),
+                    })
+            csv_path = root / "manifest.csv"
+            pd.DataFrame(rows).to_csv(csv_path, index=False)
+            config = {
+                "experiment": "modality_dropout_smoke",
+                "output_dir": str(root / "outputs"),
+                "csv_path": str(csv_path),
+                "image_dir": str(root),
+                "model_type": "image_tabular",
+                "env_features": ["bio_1"],
+                "include_topo_scalars": False,
+                "epochs": 1,
+                "batch_size": 2,
+                "learning_rate": 0.001,
+                "dropout": 0.25,
+                "hidden_dim": 8,
+                "env_feature_dim": 4,
+                "naip_channels": 4,
+                "pretrained_image": False,
+                "num_workers": 0,
+                "use_fp16": False,
+                "use_wandb": False,
+                "loss_strategy": "ordinary_bce",
+                "spatial_augmentation": "none",
+                "radiometric_augmentation": False,
+                "radiometric_consistency": {"enabled": False, "weight": 0.0},
+                "image_modality_dropout_probability": 0.25,
+                "postfit_calibration": "none",
+                "seed": 13,
+            }
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, "main.py", "--config", str(config_path)],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            self.assertEqual(
+                completed.returncode, 0, msg=completed.stderr + completed.stdout
+            )
+            output = root / "outputs" / "modality_dropout_smoke"
+            design = json.loads((output / "training_design.json").read_text())
+            self.assertTrue(design["image_modality_dropout"]["enabled"])
+            self.assertEqual(design["image_modality_dropout"]["probability"], 0.25)
+            self.assertEqual(
+                design["image_modality_dropout"]["validation_test_inference"],
+                "disabled_full_image_pathway",
+            )
+
     def test_image_training_records_paired_radiometric_consistency(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -505,6 +612,15 @@ class AugustExperimentDesignTests(unittest.TestCase):
         ]
         self.assertTrue(all("_rad2_consw200_" in name for name in consistency_names))
         self.assertTrue(set(names).isdisjoint(consistency_names))
+        modality_selection = {
+            **selection,
+            "image_modality_dropout_probability": 0.25,
+        }
+        modality_names = [
+            replacement_name(modality_selection, fold) for fold in range(1, 6)
+        ]
+        self.assertTrue(all("_rad2_moddrop25_" in name for name in modality_names))
+        self.assertTrue(set(names).isdisjoint(modality_names))
 
     def test_ailanthus_replacement_production_name_preserves_lineage(self):
         selection = {
@@ -523,6 +639,11 @@ class AugustExperimentDesignTests(unittest.TestCase):
         consistency_name = replacement_production_name(selection)
         self.assertIn("_rad2_consw050_", consistency_name)
         self.assertNotEqual(name, consistency_name)
+        selection.pop("radiometric_consistency")
+        selection["image_modality_dropout_probability"] = 0.10
+        modality_name = replacement_production_name(selection)
+        self.assertIn("_rad2_moddrop10_", modality_name)
+        self.assertNotEqual(name, modality_name)
 
     def test_ailanthus_robustness_advancement_gates_are_conjunctive(self):
         import pandas as pd
@@ -613,6 +734,42 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertEqual(
             config["august_experiment_spec"]["stage"],
             "ailanthus-radiometric-consistency-screen",
+        )
+
+    def test_ailanthus_modality_dropout_screen_is_bounded_and_isolated(self):
+        self.assertEqual(MODALITY_DROPOUT_PROBABILITIES, (0.10, 0.25, 0.50))
+        names = [
+            ailanthus_modality_dropout_experiment_name(probability)
+            for probability in MODALITY_DROPOUT_PROBABILITIES
+        ]
+        self.assertEqual(len(names), len(set(names)))
+        source = {
+            "seed": 42,
+            "radiometric_augmentation": dict(STRONG_RADIOMETRIC),
+            "dropout": 0.25,
+            "label_smoothing": 0.05,
+        }
+        base = {
+            "experiment": "stage05a_base",
+            "best_checkpoint_sha256": "a" * 64,
+            "artifact_candidate_absolute_did_mean": 0.105374757,
+        }
+        config = build_ailanthus_modality_dropout_config(
+            source,
+            base,
+            0.25,
+            Path("/tmp/stage"),
+            Path("/tmp/consistency-evidence"),
+            "b" * 64,
+        )
+        self.assertEqual(config["radiometric_augmentation"], STRONG_RADIOMETRIC)
+        self.assertEqual(config["image_modality_dropout_probability"], 0.25)
+        self.assertEqual(
+            config["radiometric_consistency"], {"enabled": False, "weight": 0.0}
+        )
+        self.assertEqual(
+            config["august_experiment_spec"]["stage"],
+            "ailanthus-image-modality-dropout-screen",
         )
 
     def test_consistency_evidence_freezes_explicit_blockcv_lineage(self):

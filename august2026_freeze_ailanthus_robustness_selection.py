@@ -17,6 +17,7 @@ HOST = "ailanthus_altissima"
 ALLOWED_SCREEN_STAGES = {
     "ailanthus-robustness-screen",
     "ailanthus-radiometric-consistency-screen",
+    "ailanthus-image-modality-dropout-screen",
 }
 
 
@@ -91,6 +92,9 @@ def freeze_selection(
         "radiometric_augmentation": config["radiometric_augmentation"],
         "radiometric_recipe": spec["radiometric_recipe"],
         "radiometric_consistency": config.get("radiometric_consistency", False),
+        "image_modality_dropout_probability": float(
+            config.get("image_modality_dropout_probability", 0.0)
+        ),
         "dropout": float(row["dropout"]),
         "label_smoothing": float(row["label_smoothing"]),
         "seed": int(spec.get("seed", config.get("seed", 42))),

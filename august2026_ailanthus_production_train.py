@@ -41,9 +41,17 @@ def replacement_name(selection: dict) -> str:
         consistency_suffix = f"_consw{int(round(weight * 100)):03d}"
     elif consistency:
         consistency_suffix = "_consw100"
+    modality_probability = float(
+        selection.get("image_modality_dropout_probability", 0.0)
+    )
+    modality_suffix = (
+        f"_moddrop{int(round(modality_probability * 100)):02d}"
+        if modality_probability > 0 else ""
+    )
     return (
         f"production_replacement_{HOST}_{arm}_"
-        f"bg{int(selection['background_target']):05d}_posw_{rad}{consistency_suffix}_"
+        f"bg{int(selection['background_target']):05d}_posw_{rad}"
+        f"{consistency_suffix}{modality_suffix}_"
         f"d{int(round(selection['dropout'] * 100)):03d}_"
         f"s{int(round(selection['label_smoothing'] * 100)):03d}_"
         f"{calibration}_{DATE_TAG}"

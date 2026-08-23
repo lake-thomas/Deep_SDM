@@ -209,6 +209,7 @@ class HostModelBase(nn.Module):
         )
         self._training_label_smoothing = 0.0
         self._radiometric_consistency_weight = 0.0
+        self._image_modality_dropout_probability = 0.0
         self._last_training_loss_components = {}
 
     def configure_training_loss(
@@ -216,6 +217,7 @@ class HostModelBase(nn.Module):
         pos_weight: float | None = None,
         label_smoothing: float = 0.0,
         radiometric_consistency_weight: float = 0.0,
+        image_modality_dropout_probability: float = 0.0,
     ) -> None:
         """Configure training-only weighting/smoothing.
 
@@ -233,10 +235,31 @@ class HostModelBase(nn.Module):
             raise ValueError(
                 "radiometric_consistency_weight must be finite and non-negative"
             )
+        if (
+            not torch.isfinite(torch.tensor(image_modality_dropout_probability))
+            or not 0 <= image_modality_dropout_probability < 1
+        ):
+            raise ValueError(
+                "image_modality_dropout_probability must be finite and in [0, 1)"
+            )
         value = float("nan") if pos_weight is None else float(pos_weight)
         self._training_pos_weight.fill_(value)
         self._training_label_smoothing = float(label_smoothing)
         self._radiometric_consistency_weight = float(radiometric_consistency_weight)
+        self._image_modality_dropout_probability = float(
+            image_modality_dropout_probability
+        )
+
+    def apply_image_modality_dropout(self, features: torch.Tensor) -> torch.Tensor:
+        """Drop complete image embeddings per sample during training only."""
+        probability = self._image_modality_dropout_probability
+        if not self.training or probability <= 0:
+            return features
+        keep = (
+            torch.rand((features.shape[0], 1), device=features.device)
+            >= probability
+        ).to(features.dtype)
+        return features * keep / (1.0 - probability)
 
     def forward_from_batch(self, batch):
         raise NotImplementedError
@@ -379,6 +402,7 @@ class HostImageryClimateModel(HostModelBase):
 
     def forward(self, img, env):
         img_feat = self.image_encoder(img)
+        img_feat = self.apply_image_modality_dropout(img_feat)
         env_feat = self.env_encoder(env)
         return self.classifier(torch.cat([img_feat, env_feat], dim=1))
 
@@ -438,6 +462,7 @@ class HostImageTopoModel(HostModelBase):
 
     def forward(self, img, topo):
         img_feat = self.image_encoder(img)
+        img_feat = self.apply_image_modality_dropout(img_feat)
         topo_feat = self.topo_encoder(topo)
         return self.classifier(torch.cat([img_feat, topo_feat], dim=1))
 
@@ -475,6 +500,7 @@ class HostImageClimateTopoModel(HostModelBase):
 
     def forward(self, img, topo, env):
         img_feat = self.image_encoder(img)
+        img_feat = self.apply_image_modality_dropout(img_feat)
         topo_feat = self.topo_encoder(topo)
         env_feat = self.env_encoder(env)
         return self.classifier(torch.cat([img_feat, topo_feat, env_feat], dim=1))
