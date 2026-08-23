@@ -32,7 +32,10 @@ from august2026_run_final_model_acceptance import (
     record_failed_final_status,
     run_command_step,
 )
-from august2026_release_evidence import assemble_release_evidence
+from august2026_release_evidence import (
+    _index_dgx_run_chain,
+    assemble_release_evidence,
+)
 from august2026_summarize_experiments import read_json, sha256
 from august2026_validate_mosaics import validate_mosaics
 from hazel_august2026.validate_submission_gate import (
@@ -320,6 +323,83 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_dgx_run_chain_requires_complete_hashed_shard_coverage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            registry = root / "registry.tsv"
+            registry.write_text("host\nailanthus_altissima\n", encoding="utf-8")
+            bundle = root / "bundle_metadata.json"
+            write_json(
+                bundle,
+                {
+                    "status": "complete",
+                    "inference_defaults": {
+                        "base_seed": 42,
+                        "deterministic_mc_samples": 1,
+                        "uncertainty_mc_samples": 5,
+                    },
+                },
+            )
+            inference_by_key = {}
+            status_paths = []
+            for host in sorted(HOSTS):
+                region = "west" if host == "notholithocarpus_densiflorus" else "east"
+                for product in ("deterministic", "uncertainty"):
+                    output_root = root / "outputs" / host / product
+                    output_dir = output_root / "shard_000"
+                    output_dir.mkdir(parents=True)
+                    tile_list = root / "tiles" / host / f"{product}.txt"
+                    tile_list.parent.mkdir(parents=True, exist_ok=True)
+                    tile_list.write_text("/imagery/tile.tif\n", encoding="utf-8")
+                    key = (host, product)
+                    inference_by_key[key] = {
+                        "host": host,
+                        "product": product,
+                        "region": region,
+                        "expected_tile_count": 1,
+                        "output_root": str(output_root),
+                    }
+                    status = root / "status" / host / f"{product}.json"
+                    write_json(
+                        status,
+                        {
+                            "status": "completed",
+                            "returncode": 0,
+                            "host": host,
+                            "region": region,
+                            "product": product,
+                            "shard_id": "000",
+                            "tile_list": str(tile_list),
+                            "tile_list_sha256": sha256(tile_list),
+                            "expected_tile_count": 1,
+                            "output_dir": str(output_dir),
+                            "prediction_count": 1,
+                            "uncertainty_count": 1,
+                            "count_count": 1,
+                            "base_seed": 42,
+                            "mc_samples": 1 if product == "deterministic" else 5,
+                            "production_registry_sha256": sha256(registry),
+                            "bundle_metadata_sha256": sha256(bundle),
+                        },
+                    )
+                    status_paths.append(status)
+            rows, failures = [], []
+            _index_dgx_run_chain(
+                status_paths, registry, bundle, inference_by_key, {}, rows, failures
+            )
+            self.assertEqual(failures, [])
+            self.assertEqual(len(rows), 10)
+            self.assertEqual({row["category"] for row in rows}, {"dgx_run_status"})
+
+            broken = read_json(status_paths[0])
+            broken["prediction_count"] = 0
+            write_json(status_paths[0], broken)
+            rows, failures = [], []
+            _index_dgx_run_chain(
+                status_paths, registry, bundle, inference_by_key, {}, rows, failures
+            )
+            self.assertTrue(any(item.startswith("dgx_run_output_counts:") for item in failures))
+
     def test_dgx_shard_runner_is_local_seeded_hann_and_resumable(self):
         script = Path(__file__).resolve().parents[1] / "dgx_august2026" / "run_inference_shard.sh"
         text = script.read_text(encoding="utf-8")

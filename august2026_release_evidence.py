@@ -477,6 +477,96 @@ def _index_hazel_submission_chain(
         failures.append("hazel_mosaic_submission_host_set")
 
 
+def _index_dgx_run_chain(
+    status_paths: list[Path],
+    production_registry_path: Path,
+    bundle_metadata_path: Path,
+    inference_by_key: dict,
+    inference_paths_by_key: dict,
+    rows: list[dict],
+    failures: list[str],
+) -> None:
+    """Verify completed local-DGX shards against their frozen bundle and QA."""
+    expected = {(host, product) for host in HOSTS for product in PRODUCTS}
+    registry_hash = sha256(production_registry_path)
+    bundle_hash = sha256(bundle_metadata_path)
+    bundle = read_json(bundle_metadata_path)
+    defaults = bundle.get("inference_defaults") or {}
+    base_seed = defaults.get("base_seed")
+    expected_mc = {
+        "deterministic": defaults.get("deterministic_mc_samples"),
+        "uncertainty": defaults.get("uncertainty_mc_samples"),
+    }
+    observed_shards: set[tuple[str, str, str]] = set()
+    counts_by_key: dict[tuple[str, str], int] = {}
+    observed_keys: set[tuple[str, str]] = set()
+    for path in status_paths:
+        if not _verified_index(
+            rows, failures, "dgx_run_status", path,
+            failure_label=f"dgx_run_status:{path.name}",
+        ):
+            continue
+        payload = read_json(path)
+        host = payload.get("host")
+        product = payload.get("product")
+        key = (host, product)
+        shard_id = str(payload.get("shard_id", ""))
+        shard_key = (host, product, shard_id)
+        if shard_key in observed_shards:
+            failures.append(f"duplicate_dgx_run_status:{shard_key}")
+        observed_shards.add(shard_key)
+        observed_keys.add(key)
+        evidence = inference_by_key.get(key) or {}
+        if key not in expected:
+            failures.append(f"dgx_run_identity:{key}")
+            continue
+        if payload.get("status") != "completed" or int(payload.get("returncode", -1)) != 0:
+            failures.append(f"dgx_run_not_complete:{shard_key}")
+        if payload.get("production_registry_sha256") != registry_hash:
+            failures.append(f"dgx_run_registry_hash:{shard_key}")
+        if payload.get("bundle_metadata_sha256") != bundle_hash:
+            failures.append(f"dgx_run_bundle_hash:{shard_key}")
+        if payload.get("region") != evidence.get("region"):
+            failures.append(f"dgx_run_region:{shard_key}")
+        tile_list = Path(str(payload.get("tile_list", "")))
+        if not tile_list.is_file() or payload.get("tile_list_sha256") != sha256(tile_list):
+            failures.append(f"dgx_run_tile_list:{shard_key}")
+        if payload.get("base_seed") != base_seed:
+            failures.append(f"dgx_run_base_seed:{shard_key}")
+        if payload.get("mc_samples") != expected_mc.get(product):
+            failures.append(f"dgx_run_mc_samples:{shard_key}")
+        try:
+            expected_count = int(payload.get("expected_tile_count", -1))
+            counts = {
+                int(payload.get("prediction_count", -1)),
+                int(payload.get("uncertainty_count", -1)),
+                int(payload.get("count_count", -1)),
+            }
+        except (TypeError, ValueError):
+            expected_count, counts = -1, {-1}
+        if expected_count < 1 or counts != {expected_count}:
+            failures.append(f"dgx_run_output_counts:{shard_key}")
+        counts_by_key[key] = counts_by_key.get(key, 0) + max(expected_count, 0)
+        output_root = evidence.get("output_root")
+        output_dir = payload.get("output_dir")
+        if not output_root or not output_dir:
+            failures.append(f"dgx_run_output_root:{shard_key}")
+        else:
+            try:
+                Path(output_dir).resolve().relative_to(Path(output_root).resolve())
+            except ValueError:
+                failures.append(f"dgx_run_output_root:{shard_key}")
+        experiment = payload.get("experiment")
+        if experiment and "experiment" in evidence and experiment != evidence.get("experiment"):
+            failures.append(f"dgx_run_experiment:{shard_key}")
+    if observed_keys != expected:
+        failures.append("dgx_run_status_host_product_set")
+    for key in expected:
+        evidence = inference_by_key.get(key) or {}
+        if counts_by_key.get(key, 0) != evidence.get("expected_tile_count"):
+            failures.append(f"dgx_run_expected_count:{key}")
+
+
 def assemble_release_evidence(
     final_acceptance_path: Path,
     production_registry_path: Path,
@@ -490,6 +580,7 @@ def assemble_release_evidence(
     aligned_correlation_path: Path,
     hann_results_path: Path,
     output_dir: Path,
+    dgx_run_status_paths: list[Path] | None = None,
 ) -> dict:
     failures = []
     index_rows: list[dict] = []
@@ -510,20 +601,26 @@ def assemble_release_evidence(
     registry_by_host = registry.set_index("host") if set(registry["host"]) == HOSTS else None
 
     bundle = read_json(hazel_bundle_metadata_path)
+    bundle_type = bundle.get("bundle_type") or "accepted_august2026_hazel_hann_inference"
+    is_dgx = bundle_type == "accepted_august2026_dgx_hann_inference"
+    is_hazel = bundle_type == "accepted_august2026_hazel_hann_inference"
+    platform = "dgx" if is_dgx else "hazel"
+    if not (is_dgx or is_hazel):
+        failures.append(f"inference_bundle_type:{bundle_type}")
     if bundle.get("status") != "complete":
-        failures.append("hazel_bundle_status")
+        failures.append(f"{platform}_bundle_status")
     if bundle.get("source_registry_sha256") != sha256(production_registry_path):
-        failures.append("hazel_bundle_registry_hash")
+        failures.append(f"{platform}_bundle_registry_hash")
     if bundle.get("acceptance_summary_sha256") != sha256(final_acceptance_path):
-        failures.append("hazel_bundle_acceptance_hash")
+        failures.append(f"{platform}_bundle_acceptance_hash")
     defaults = bundle.get("inference_defaults") or {}
     if (
         defaults.get("stride") != 64
         or defaults.get("blend_window") != "hann"
         or float(defaults.get("blend_edge_floor", -1)) != 0.05
     ):
-        failures.append("hazel_bundle_hann_defaults")
-    _index(index_rows, "hazel_inference_bundle", hazel_bundle_metadata_path)
+        failures.append(f"{platform}_bundle_hann_defaults")
+    _index(index_rows, f"{platform}_inference_bundle", hazel_bundle_metadata_path)
     bundle_hashes = bundle.get("file_sha256") or {}
     required_bundle_files = {
         "code_snapshot/inference_multimodal_production.py",
@@ -531,18 +628,34 @@ def assemble_release_evidence(
         "production_experiment_registry.tsv",
         "final_model_acceptance_summary.json",
     }
+    if is_dgx:
+        required_bundle_files.update({
+            "code_snapshot/august2026_inference_provenance.py",
+            "mc_stability_summary.json",
+        })
     if not isinstance(bundle_hashes, dict) or not required_bundle_files.issubset(
         bundle_hashes
     ):
-        failures.append("hazel_bundle_file_manifest")
+        failures.append(f"{platform}_bundle_file_manifest")
     else:
         for relative, expected in sorted(bundle_hashes.items()):
             _verified_index(
-                index_rows, failures, "hazel_bundle_file",
+                index_rows, failures, f"{platform}_bundle_file",
                 hazel_bundle_metadata_path.parent / relative,
                 expected_sha256=expected,
-                failure_label=f"hazel_bundle_file:{relative}",
+                failure_label=f"{platform}_bundle_file:{relative}",
             )
+    if is_dgx:
+        mc_path = hazel_bundle_metadata_path.parent / "mc_stability_summary.json"
+        if mc_path.is_file():
+            mc = read_json(mc_path)
+            if (
+                bundle.get("mc_stability_summary_sha256") != sha256(mc_path)
+                or mc.get("status") != "complete"
+                or mc.get("recommended_mc_samples")
+                != defaults.get("uncertainty_mc_samples")
+            ):
+                failures.append("dgx_bundle_mc_stability")
 
     provenance_by_host = {}
     for path in candidate_provenance_paths:
@@ -699,15 +812,18 @@ def assemble_release_evidence(
     if set(mosaic_by_host) != HOSTS:
         failures.append("mosaic_qa_host_set")
 
-    _index_hazel_submission_chain(
-        hazel_submission_log_paths,
-        production_registry_path,
-        hazel_bundle_metadata_path,
-        inference_by_key,
-        inference_paths_by_key,
-        index_rows,
-        failures,
-    )
+    if is_dgx:
+        _index_dgx_run_chain(
+            dgx_run_status_paths or [], production_registry_path,
+            hazel_bundle_metadata_path, inference_by_key, inference_paths_by_key,
+            index_rows, failures,
+        )
+    else:
+        _index_hazel_submission_chain(
+            hazel_submission_log_paths, production_registry_path,
+            hazel_bundle_metadata_path, inference_by_key, inference_paths_by_key,
+            index_rows, failures,
+        )
 
     visual = read_json(visual_review_path)
     if visual.get("status") != "complete" or not visual.get(
@@ -881,8 +997,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--final-acceptance", type=Path, required=True)
     parser.add_argument("--production-registry", type=Path, required=True)
-    parser.add_argument("--hazel-bundle-metadata", type=Path, required=True)
-    parser.add_argument("--hazel-submission-log", type=Path, action="append", required=True)
+    bundle = parser.add_mutually_exclusive_group(required=True)
+    bundle.add_argument("--hazel-bundle-metadata", type=Path)
+    bundle.add_argument("--dgx-bundle-metadata", type=Path)
+    parser.add_argument("--hazel-submission-log", type=Path, action="append", default=[])
+    parser.add_argument("--dgx-run-status", type=Path, action="append", default=[])
     parser.add_argument("--candidate-provenance-summary", type=Path, action="append", required=True)
     parser.add_argument("--attrition-summary", type=Path, action="append", required=True)
     parser.add_argument("--inference-qa-summary", type=Path, action="append", required=True)
@@ -896,9 +1015,19 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    bundle_metadata = args.dgx_bundle_metadata or args.hazel_bundle_metadata
+    if args.dgx_bundle_metadata and args.hazel_submission_log:
+        raise ValueError("DGX release evidence cannot use Hazel submission logs")
+    if args.hazel_bundle_metadata and args.dgx_run_status:
+        raise ValueError("Hazel release evidence cannot use DGX run statuses")
+    if args.hazel_bundle_metadata and not args.hazel_submission_log:
+        raise ValueError("Hazel release evidence requires --hazel-submission-log")
+    if args.dgx_bundle_metadata and not args.dgx_run_status:
+        raise ValueError("DGX release evidence requires --dgx-run-status")
     required = [
-        args.final_acceptance, args.production_registry, args.hazel_bundle_metadata,
+        args.final_acceptance, args.production_registry, bundle_metadata,
         *args.hazel_submission_log,
+        *args.dgx_run_status,
         args.visual_review, args.aligned_correlation, args.hann_results,
         *args.candidate_provenance_summary, *args.attrition_summary,
         *args.inference_qa_summary, *args.mosaic_qa_summary,
@@ -907,12 +1036,13 @@ def main() -> None:
     if missing:
         raise FileNotFoundError(f"Missing release evidence inputs: {missing}")
     payload = assemble_release_evidence(
-        args.final_acceptance, args.production_registry, args.hazel_bundle_metadata,
+        args.final_acceptance, args.production_registry, bundle_metadata,
         args.hazel_submission_log,
         args.candidate_provenance_summary, args.attrition_summary,
         args.inference_qa_summary, args.mosaic_qa_summary,
         args.visual_review, args.aligned_correlation, args.hann_results,
         args.output_dir,
+        dgx_run_status_paths=args.dgx_run_status,
     )
     print(json.dumps(payload, indent=2))
 
