@@ -37,6 +37,9 @@ from august2026_run_final_model_acceptance import (
     record_failed_final_status,
     run_command_step,
 )
+from august2026_run_ailanthus_replacement_acceptance import (
+    probe_commands as replacement_probe_commands,
+)
 from august2026_release_evidence import (
     _index_dgx_run_chain,
     assemble_release_evidence,
@@ -332,6 +335,22 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_replacement_acceptance_runs_all_raw_and_configured_probes(self):
+        commands = replacement_probe_commands(
+            Path("registry.tsv"), Path("output"), "cuda", 64, True
+        )
+        self.assertEqual(
+            [step for step, _, _ in commands],
+            [
+                "raw:matched", "raw:exact_overlap",
+                "configured:matched", "configured:exact_overlap",
+            ],
+        )
+        for step, output, command in commands:
+            self.assertIn("--resume-completed", command)
+            self.assertEqual(command[command.index("--score-space") + 1], step.split(":")[0])
+            self.assertTrue(str(output).endswith(f"{step.split(':')[1]}/ailanthus_altissima"))
+
     def test_replacement_assembly_substitutes_only_ailanthus(self):
         original = pd.DataFrame([
             {"host": host, "experiment": f"old-{host}", "fold": fold}
