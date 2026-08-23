@@ -403,6 +403,36 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             self.assertEqual(final_args[3:], ("cuda", 64, 512))
             self.assertFalse(final_kwargs["resume_completed"])
 
+    def test_five_host_promotion_resume_rejects_original_registry_change(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_registry = root / "original_registry.tsv"
+            original_registry.write_text("original\n", encoding="utf-8")
+            original_acceptance = root / "original_acceptance.json"
+            replacement_acceptance = root / "replacement_acceptance.json"
+            write_json(original_acceptance, {"status": "complete"})
+            write_json(replacement_acceptance, {"status": "complete"})
+            assembly = root / "assembly"
+            assembly.mkdir()
+            (assembly / "COMPLETED").write_text("complete\n", encoding="utf-8")
+            write_json(assembly / "summary.json", {
+                "status": "complete",
+                "original_acceptance_sha256": sha256(original_acceptance),
+                "replacement_acceptance_sha256": sha256(replacement_acceptance),
+            })
+            write_json(assembly / "production" / "design_metadata.json", {
+                "source_original_registry": str(original_registry),
+                "source_original_registry_sha256": "wrong",
+            })
+
+            with self.assertRaisesRegex(ValueError, "original registry changed"):
+                ailanthus_five_host_promotion.validate_existing_assembly(
+                    assembly,
+                    original_registry,
+                    original_acceptance,
+                    replacement_acceptance,
+                )
+
     def test_ailanthus_production_stage_runs_fit_before_acceptance(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

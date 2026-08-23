@@ -20,6 +20,7 @@ CODE_ROOT = Path(__file__).resolve().parent
 
 def validate_existing_assembly(
     output_dir: Path,
+    original_registry: Path,
     original_acceptance: Path,
     replacement_acceptance: Path,
 ) -> dict:
@@ -35,6 +36,16 @@ def validate_existing_assembly(
         != sha256(replacement_acceptance)
     ):
         raise ValueError("Existing five-host assembly identity changed")
+    design_metadata = output_dir / "production" / "design_metadata.json"
+    if not design_metadata.is_file():
+        raise FileNotFoundError("Existing five-host assembly lacks design metadata")
+    design = read_json(design_metadata)
+    if (
+        Path(design.get("source_original_registry", "")).resolve()
+        != original_registry.resolve()
+        or design.get("source_original_registry_sha256") != sha256(original_registry)
+    ):
+        raise ValueError("Existing five-host assembly original registry changed")
     for path_key, hash_key in (
         ("production_registry", "production_registry_sha256"),
         ("production_selection_manifest", "production_selection_manifest_sha256"),
@@ -65,7 +76,10 @@ def run_stage(
         if not resume_completed:
             raise FileExistsError(f"Refusing existing assembly: {assembly_dir}")
         assembly = validate_existing_assembly(
-            assembly_dir, original_acceptance, replacement_acceptance
+            assembly_dir,
+            original_registry,
+            original_acceptance,
+            replacement_acceptance,
         )
     else:
         assembly = assemble_inputs(
