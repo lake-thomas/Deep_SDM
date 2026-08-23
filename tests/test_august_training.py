@@ -45,6 +45,7 @@ from august2026_ailanthus_robustness_evidence import (
     MATCHED_BOUNDARY_MAXIMUM,
     add_advancement_gates,
 )
+from august2026_ailanthus_blockcv import replacement_name
 from august2026_combine_dataset_screen_evidence import HOSTS, combine_evidence
 from august2026_inference_output_qa import validate_triplet
 from august2026_prepare_mosaic_inputs import prepare_inputs
@@ -242,6 +243,18 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_ailanthus_replacement_blockcv_name_is_isolated(self):
+        selection = {
+            "arm": "domain_balanced",
+            "background_target": 20000,
+            "radiometric_augmentation": {"enabled": True},
+            "dropout": 0.35,
+            "label_smoothing": 0.05,
+        }
+        names = [replacement_name(selection, fold) for fold in range(1, 6)]
+        self.assertEqual(len(set(names)), 5)
+        self.assertTrue(all(name.startswith("stage05b_ailanthus_altissima_") for name in names))
+
     def test_ailanthus_robustness_advancement_gates_are_conjunctive(self):
         import pandas as pd
 
