@@ -409,6 +409,17 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("--seed", text)
         self.assertNotIn("sbatch", text)
         self.assertNotIn("SLURM_", text)
+
+    def test_dgx_queue_is_serial_local_and_runs_provenance_aware_qa(self):
+        script = Path(__file__).resolve().parents[1] / "dgx_august2026" / "run_inference_queue.sh"
+        text = script.read_text(encoding="utf-8")
+        self.assertIn('bash "${BUNDLE_ROOT}/run_inference_shard.sh"', text)
+        self.assertIn("--expected-mc-samples", text)
+        self.assertIn("--base-seed", text)
+        self.assertIn("tile_manifest_sha256", text)
+        self.assertNotIn("sbatch", text)
+        self.assertNotIn("SLURM_", text)
+
     def test_hazel_submission_gate_rejects_changed_bundle_and_qa_identity(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
