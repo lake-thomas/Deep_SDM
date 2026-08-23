@@ -299,6 +299,7 @@ class HostNAIPDataset(Dataset):
         transform=None,
         topo_transform=None,
         paired_transform=None,
+        paired_view_transform=None,
         model_type: str = "image_tabular",
         input_mode: Optional[str] = None,
         include_topo_scalars: bool = True,
@@ -311,6 +312,7 @@ class HostNAIPDataset(Dataset):
         self.transform = transform
         self.topo_transform = topo_transform
         self.paired_transform = paired_transform
+        self.paired_view_transform = paired_view_transform
         self.naip_scale_255 = naip_scale_255
         self.strict = strict
 
@@ -466,8 +468,14 @@ class HostNAIPDataset(Dataset):
             if topo_tensor is not None and self.topo_transform is not None:
                 topo_tensor = self.topo_transform(topo_tensor)
 
+        consistency_image = None
+        if image_tensor is not None and self.paired_view_transform is not None:
+            image_tensor, consistency_image = self.paired_view_transform(image_tensor)
+
         if image_tensor is not None:
             batch["image"] = image_tensor.float()
+        if consistency_image is not None:
+            batch["image_consistency"] = consistency_image.float()
         if topo_tensor is not None:
             batch["topo"] = topo_tensor.float()
 

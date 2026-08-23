@@ -85,6 +85,7 @@ from model import build_model
 from train_utils import fit
 from transforms import (
     Compose4Band,
+    PairedIndependentRadiometricViews4Band,
     RandomAugment4Band,
     RandomDihedral4Band,
     RandomPairedAugment4Band,
@@ -163,6 +164,18 @@ def make_dataloaders(config: dict, model_type: str, env_vars: list[str]):
     image_transform = None
     topo_transform = None
     paired_transform = None
+    paired_view_transform = None
+    consistency_config = config.get("radiometric_consistency", False)
+    consistency_requested = (
+        bool(consistency_config.get("enabled", True))
+        if isinstance(consistency_config, dict)
+        else bool(consistency_config)
+    )
+    if consistency_requested and not (req["image"] and not req["topo"]):
+        raise ValueError(
+            "radiometric_consistency currently requires an image-only pathway "
+            "without topographic image chips"
+        )
 
     augmentation_regime = str(config.get("spatial_augmentation", "legacy_rotation")).lower()
     if augmentation_regime not in {"legacy_rotation", "dihedral", "none"}:
@@ -191,7 +204,20 @@ def make_dataloaders(config: dict, model_type: str, env_vars: list[str]):
         else:
             radiometric_enabled = bool(radiometric)
             radiometric_kwargs = {}
-        if radiometric_enabled:
+        consistency_enabled = (
+            bool(consistency_config.get("enabled", True))
+            if isinstance(consistency_config, dict)
+            else bool(consistency_config)
+        )
+        if consistency_enabled and not radiometric_enabled:
+            raise ValueError(
+                "radiometric_consistency requires radiometric_augmentation"
+            )
+        if consistency_enabled:
+            paired_view_transform = PairedIndependentRadiometricViews4Band(
+                RandomRadiometricAugment4Band(**radiometric_kwargs)
+            )
+        elif radiometric_enabled:
             image_transforms.append(RandomRadiometricAugment4Band(**radiometric_kwargs))
         image_transform = Compose4Band(image_transforms) if image_transforms else None
     elif req["image"] and req["topo"] and allow_topo_spatial_aug:
@@ -225,6 +251,7 @@ def make_dataloaders(config: dict, model_type: str, env_vars: list[str]):
         transform=image_transform,
         topo_transform=topo_transform,
         paired_transform=paired_transform,
+        paired_view_transform=paired_view_transform,
         **dataset_kwargs,
     )
     
@@ -401,6 +428,17 @@ def main():
         raise RuntimeError(f"Training split lacks a class: {train_counts.to_dict()}")
     loss_strategy = str(config.get("loss_strategy", "ordinary_bce")).lower()
     label_smoothing = float(config.get("label_smoothing", 0.0))
+    consistency = config.get("radiometric_consistency", False)
+    if isinstance(consistency, dict):
+        consistency_enabled = bool(consistency.get("enabled", True))
+        consistency_weight = float(consistency.get("weight", 0.0))
+    else:
+        consistency_enabled = bool(consistency)
+        consistency_weight = 1.0 if consistency_enabled else 0.0
+    if consistency_weight < 0:
+        raise ValueError("radiometric consistency weight must be non-negative")
+    if consistency_enabled and consistency_weight == 0:
+        raise ValueError("enabled radiometric consistency requires positive weight")
     pos_weight = (
         float(train_counts.loc[0] / train_counts.loc[1])
         if loss_strategy == "pos_weight_bce"
@@ -409,6 +447,7 @@ def main():
     model.configure_training_loss(
         pos_weight=pos_weight,
         label_smoothing=label_smoothing,
+        radiometric_consistency_weight=consistency_weight,
     )
     dataset_sha256 = hashlib.sha256(Path(config["csv_path"]).read_bytes()).hexdigest()
     training_design = {
@@ -435,6 +474,14 @@ def main():
         "dataset_csv_sha256": dataset_sha256,
         "spatial_augmentation": config.get("spatial_augmentation", "legacy_rotation"),
         "radiometric_augmentation": config.get("radiometric_augmentation", False),
+        "radiometric_consistency": {
+            "enabled": consistency_enabled,
+            "weight": consistency_weight,
+            "loss": "mean_squared_probability_difference",
+            "paired_view_rule": (
+                "shared exact spatial view with two independent bounded radiometric views"
+            ),
+        },
         "seed": seed,
     }
     _write_json_atomic(experiment_dir / "training_design.json", training_design)

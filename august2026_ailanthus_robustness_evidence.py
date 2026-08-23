@@ -87,6 +87,9 @@ def synthesize_evidence(
     matched_root: Path,
     exact_overlap_root: Path,
     output_dir: Path,
+    expected_candidate_count: int = EXPECTED_CANDIDATE_COUNT,
+    expected_stage: str = "ailanthus-robustness-screen",
+    evidence_filename: str = "ailanthus_robustness_candidate_evidence.csv",
 ) -> dict:
     metadata_path = registry.parent / "design_metadata.json"
     training_path = registry.parent / "analysis" / "experiment_metrics.csv"
@@ -95,14 +98,14 @@ def synthesize_evidence(
     if missing:
         raise FileNotFoundError(f"Missing robustness-screen inputs: {missing}")
     metadata = read_json(metadata_path)
-    if metadata.get("stage") != "ailanthus-robustness-screen":
-        raise RuntimeError("Registry is not the frozen Ailanthus robustness screen")
+    if metadata.get("stage") != expected_stage:
+        raise RuntimeError(f"Registry is not the frozen {expected_stage} screen")
 
     training = pd.read_csv(training_path, low_memory=False)
     if (
-        len(training) != EXPECTED_CANDIDATE_COUNT
+        len(training) != expected_candidate_count
         or training["experiment"].duplicated().any()
-        or set(training["stage"]) != {"ailanthus-robustness-screen"}
+        or set(training["stage"]) != {expected_stage}
         or set(training["host"]) != {HOST}
     ):
         raise ValueError("Ailanthus robustness training matrix is incomplete")
@@ -131,12 +134,12 @@ def synthesize_evidence(
     combined = add_advancement_gates(combined)
 
     output_dir.mkdir(parents=True, exist_ok=False)
-    evidence_path = output_dir / "ailanthus_robustness_candidate_evidence.csv"
+    evidence_path = output_dir / evidence_filename
     write_csv_atomic(evidence_path, combined)
     passing = combined.loc[combined["advancement_gate_passed"], "experiment"].tolist()
     status = {
         "status": "complete",
-        "stage": "ailanthus-robustness-screen",
+        "stage": expected_stage,
         "registry": str(registry.resolve()),
         "registry_sha256": sha256(registry),
         "design_metadata": str(metadata_path.resolve()),

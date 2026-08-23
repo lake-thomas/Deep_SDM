@@ -163,6 +163,8 @@ def fit(
     for epoch in range(epochs):
         model.train()
         train_losses = []
+        train_supervised_losses = []
+        train_consistency_losses = []
 
         for batch in train_loader:
             optimizer.zero_grad(set_to_none=True)
@@ -175,9 +177,28 @@ def fit(
             scaler.update()
 
             train_losses.append(loss.detach())
+            components = (
+                model.training_loss_components()
+                if hasattr(model, "training_loss_components")
+                else {}
+            )
+            if "supervised" in components:
+                train_supervised_losses.append(components["supervised"])
+            if "radiometric_consistency" in components:
+                train_consistency_losses.append(
+                    components["radiometric_consistency"]
+                )
 
         result = evaluate(model, val_loader)
         result["train_loss"] = torch.stack(train_losses).mean().item()
+        if train_supervised_losses:
+            result["train_supervised_loss"] = (
+                torch.stack(train_supervised_losses).mean().item()
+            )
+        if train_consistency_losses:
+            result["train_radiometric_consistency_loss"] = (
+                torch.stack(train_consistency_losses).mean().item()
+            )
         model.epoch_end(epoch, result)
         history.append(result)
 

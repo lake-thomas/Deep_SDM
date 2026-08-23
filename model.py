@@ -208,11 +208,14 @@ class HostModelBase(nn.Module):
             persistent=False,
         )
         self._training_label_smoothing = 0.0
+        self._radiometric_consistency_weight = 0.0
+        self._last_training_loss_components = {}
 
     def configure_training_loss(
         self,
         pos_weight: float | None = None,
         label_smoothing: float = 0.0,
+        radiometric_consistency_weight: float = 0.0,
     ) -> None:
         """Configure training-only weighting/smoothing.
 
@@ -223,9 +226,17 @@ class HostModelBase(nn.Module):
             raise ValueError("pos_weight must be finite and positive")
         if not 0 <= label_smoothing < 1:
             raise ValueError("label_smoothing must be in [0, 1)")
+        if (
+            not torch.isfinite(torch.tensor(radiometric_consistency_weight))
+            or radiometric_consistency_weight < 0
+        ):
+            raise ValueError(
+                "radiometric_consistency_weight must be finite and non-negative"
+            )
         value = float("nan") if pos_weight is None else float(pos_weight)
         self._training_pos_weight.fill_(value)
         self._training_label_smoothing = float(label_smoothing)
+        self._radiometric_consistency_weight = float(radiometric_consistency_weight)
 
     def forward_from_batch(self, batch):
         raise NotImplementedError
@@ -240,7 +251,29 @@ class HostModelBase(nn.Module):
             if torch.isfinite(self._training_pos_weight)
             else None
         )
-        return F.binary_cross_entropy_with_logits(out, targets, pos_weight=pos_weight)
+        supervised = F.binary_cross_entropy_with_logits(
+            out, targets, pos_weight=pos_weight
+        )
+        consistency = torch.zeros((), dtype=supervised.dtype, device=supervised.device)
+        if self._radiometric_consistency_weight > 0:
+            if "image" not in batch or "image_consistency" not in batch:
+                raise ValueError(
+                    "Radiometric consistency requires image and image_consistency views"
+                )
+            paired_batch = dict(batch)
+            paired_batch["image"] = batch["image_consistency"]
+            paired_out = self.forward_from_batch(paired_batch)
+            consistency = F.mse_loss(torch.sigmoid(out), torch.sigmoid(paired_out))
+        total = supervised + self._radiometric_consistency_weight * consistency
+        self._last_training_loss_components = {
+            "supervised": supervised.detach(),
+            "radiometric_consistency": consistency.detach(),
+            "radiometric_consistency_weight": self._radiometric_consistency_weight,
+        }
+        return total
+
+    def training_loss_components(self) -> dict:
+        return dict(self._last_training_loss_components)
 
     def validation_step(self, batch):
         labels = batch["label"].to(next(self.parameters()).device)

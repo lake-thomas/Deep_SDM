@@ -206,3 +206,27 @@ class RandomRadiometricAugment4Band:
             if float(ndvi_shift) <= self.max_mean_ndvi_shift:
                 return candidate
         return image
+
+
+class PairedIndependentRadiometricViews4Band:
+    """Create two radiometric views after one shared spatial transformation.
+
+    The caller applies any exact spatial transform first. This wrapper then
+    clones that common tensor and samples the supplied radiometric transform
+    independently for each view, isolating the intended consistency axis.
+    """
+
+    def __init__(self, radiometric_transform):
+        if radiometric_transform is None or not callable(radiometric_transform):
+            raise ValueError("A callable radiometric transform is required")
+        self.radiometric_transform = radiometric_transform
+
+    def __call__(self, image):
+        if image.ndim != 3 or image.shape[0] != 4:
+            raise ValueError(
+                f"Expected four-band C,H,W tensor, received {tuple(image.shape)}"
+            )
+        return (
+            self.radiometric_transform(image.clone()),
+            self.radiometric_transform(image.clone()),
+        )

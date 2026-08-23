@@ -45,6 +45,11 @@ from august2026_ailanthus_robustness_evidence import (
     MATCHED_BOUNDARY_MAXIMUM,
     add_advancement_gates,
 )
+from august2026_ailanthus_consistency_screen import (
+    CONSISTENCY_WEIGHTS,
+    build_config as build_ailanthus_consistency_config,
+    experiment_name as ailanthus_consistency_experiment_name,
+)
 from august2026_ailanthus_blockcv import replacement_name
 from august2026_ailanthus_production_train import (
     replacement_name as replacement_production_name,
@@ -79,7 +84,11 @@ from august2026_fixed_env_artifact_probe import pair_metrics, sha256
 from august2026_summarize_experiments import summarize_registry
 from datasets import BalancedBinaryBatchSampler
 from model import HostModelBase
-from transforms import RandomDihedral4Band, RandomRadiometricAugment4Band
+from transforms import (
+    PairedIndependentRadiometricViews4Band,
+    RandomDihedral4Band,
+    RandomRadiometricAugment4Band,
+)
 
 
 class _DummyBinaryModel(HostModelBase):
@@ -91,7 +100,39 @@ class _DummyBinaryModel(HostModelBase):
         return batch["logits"] + self.bias
 
 
+class _DummyPairedImageModel(HostModelBase):
+    def __init__(self):
+        super().__init__()
+        self.bias = torch.nn.Parameter(torch.tensor(0.0))
+
+    def forward_from_batch(self, batch):
+        return batch["image"] + self.bias
+
+
 class AugustLossTests(unittest.TestCase):
+    def test_paired_radiometric_consistency_adds_probability_mse(self):
+        model = _DummyPairedImageModel()
+        model.configure_training_loss(radiometric_consistency_weight=2.0)
+        batch = {
+            "image": torch.tensor([-1.0, 1.0]),
+            "image_consistency": torch.tensor([-0.5, 0.25]),
+            "label": torch.tensor([0.0, 1.0]),
+        }
+        supervised = F.binary_cross_entropy_with_logits(
+            batch["image"], batch["label"]
+        )
+        consistency = F.mse_loss(
+            torch.sigmoid(batch["image"]),
+            torch.sigmoid(batch["image_consistency"]),
+        )
+        observed = model.training_step(batch)
+        self.assertTrue(torch.allclose(observed, supervised + 2.0 * consistency))
+        components = model.training_loss_components()
+        self.assertTrue(torch.allclose(components["supervised"], supervised))
+        self.assertTrue(
+            torch.allclose(components["radiometric_consistency"], consistency)
+        )
+
     def test_weighting_and_smoothing_are_training_only(self):
         model = _DummyBinaryModel()
         model.configure_training_loss(pos_weight=3.0, label_smoothing=0.1)
@@ -126,6 +167,23 @@ class BalancedSamplerTests(unittest.TestCase):
 
 
 class AugustAugmentationTests(unittest.TestCase):
+    def test_paired_radiometric_views_are_independent_clones(self):
+        class CountingTransform:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, image):
+                self.calls += 1
+                image.add_(float(self.calls))
+                return image
+
+        source = torch.zeros((4, 3, 3), dtype=torch.float32)
+        paired = PairedIndependentRadiometricViews4Band(CountingTransform())
+        first, second = paired(source)
+        self.assertTrue(torch.equal(source, torch.zeros_like(source)))
+        self.assertTrue(torch.equal(first, torch.ones_like(first)))
+        self.assertTrue(torch.equal(second, torch.full_like(second, 2.0)))
+
     def test_dihedral_transform_introduces_no_interpolated_values(self):
         image = torch.arange(4 * 5 * 5, dtype=torch.float32).reshape(4, 5, 5)
         random.seed(4)
@@ -176,6 +234,92 @@ class CalibrationTests(unittest.TestCase):
 
 
 class AugustEndToEndSmokeTests(unittest.TestCase):
+    def test_image_training_records_paired_radiometric_consistency(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_path = root / "chip.tif"
+            image = np.stack([
+                np.full((64, 64), value, dtype=np.uint8)
+                for value in (40, 80, 120, 160)
+            ])
+            with rasterio.open(
+                image_path,
+                "w",
+                driver="GTiff",
+                height=64,
+                width=64,
+                count=4,
+                dtype="uint8",
+                crs="EPSG:5070",
+                transform=rasterio.transform.from_origin(0, 64, 1, 1),
+            ) as target:
+                target.write(image)
+            rows = []
+            for split in ("train", "val", "test"):
+                for index in range(4):
+                    rows.append({
+                        "sample_id": f"{split}_{index}",
+                        "split": split,
+                        "presence": index % 2,
+                        "lat": 35.0,
+                        "lon": -78.0,
+                        "chip_path": str(image_path),
+                    })
+            csv_path = root / "manifest.csv"
+            pd.DataFrame(rows).to_csv(csv_path, index=False)
+            config = {
+                "experiment": "paired_consistency_smoke",
+                "output_dir": str(root / "outputs"),
+                "csv_path": str(csv_path),
+                "image_dir": str(root),
+                "model_type": "image_only",
+                "epochs": 1,
+                "batch_size": 2,
+                "learning_rate": 0.001,
+                "dropout": 0.25,
+                "hidden_dim": 8,
+                "naip_channels": 4,
+                "pretrained_image": False,
+                "num_workers": 0,
+                "use_fp16": False,
+                "use_wandb": False,
+                "loss_strategy": "ordinary_bce",
+                "spatial_augmentation": "dihedral",
+                "radiometric_augmentation": {
+                    "enabled": True,
+                    "probability": 1.0,
+                    "scene_gain": 0.05,
+                    "gamma": 0.03,
+                    "contrast": 0.05,
+                    "band_gain": 0.01,
+                    "band_offset": 0.005,
+                    "max_mean_ndvi_shift": 0.05,
+                    "attempts": 2,
+                },
+                "radiometric_consistency": {"enabled": True, "weight": 2.0},
+                "postfit_calibration": "none",
+                "seed": 11,
+            }
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, "main.py", "--config", str(config_path)],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            self.assertEqual(
+                completed.returncode, 0, msg=completed.stderr + completed.stdout
+            )
+            output = root / "outputs" / "paired_consistency_smoke"
+            history = pd.read_csv(output / "training_history.csv")
+            self.assertIn("train_supervised_loss", history)
+            self.assertIn("train_radiometric_consistency_loss", history)
+            design = json.loads((output / "training_design.json").read_text())
+            self.assertTrue(design["radiometric_consistency"]["enabled"])
+            self.assertEqual(design["radiometric_consistency"]["weight"], 2.0)
+
     def test_training_writes_traceable_best_model_and_protects_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -355,6 +499,42 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertLessEqual(STRONG_RADIOMETRIC["contrast"], 0.15723992553342825)
         self.assertLessEqual(
             STRONG_RADIOMETRIC["max_mean_ndvi_shift"], 0.0630348114243701
+        )
+
+    def test_ailanthus_consistency_screen_is_bounded_and_preserves_recipe(self):
+        self.assertEqual(CONSISTENCY_WEIGHTS, (0.5, 2.0, 5.0))
+        names = [
+            ailanthus_consistency_experiment_name(weight)
+            for weight in CONSISTENCY_WEIGHTS
+        ]
+        self.assertEqual(len(names), len(set(names)))
+        source = {
+            "seed": 42,
+            "radiometric_augmentation": dict(STRONG_RADIOMETRIC),
+            "dropout": 0.25,
+            "label_smoothing": 0.05,
+        }
+        base = {
+            "best_checkpoint_sha256": "a" * 64,
+            "artifact_candidate_absolute_did_mean": 0.105374757,
+        }
+        config = build_ailanthus_consistency_config(
+            source,
+            base,
+            2.0,
+            Path("/tmp/stage"),
+            Path("/tmp/evidence"),
+            "b" * 64,
+        )
+        self.assertEqual(config["radiometric_augmentation"], STRONG_RADIOMETRIC)
+        self.assertEqual(config["dropout"], 0.25)
+        self.assertEqual(config["label_smoothing"], 0.05)
+        self.assertEqual(
+            config["radiometric_consistency"], {"enabled": True, "weight": 2.0}
+        )
+        self.assertEqual(
+            config["august_experiment_spec"]["stage"],
+            "ailanthus-radiometric-consistency-screen",
         )
 
     def test_current_builder_snapshot_is_recoverable_from_head(self):
