@@ -138,6 +138,7 @@ def fit(
     restore_best_model=False,
     checkpoint_metadata=None,
     save_epoch_checkpoints=False,
+    epoch_callback=None,
 ):
     """
     Train a model with ReduceLROnPlateau scheduling and early stopping.
@@ -216,6 +217,7 @@ def fit(
         scheduler.step(result["val_loss"])
         print(f"Learning Rate: {optimizer.param_groups[0]['lr']:.8f}")
 
+        should_stop = False
         if result["val_loss"] < best_val_loss:
             best_val_loss = result["val_loss"]
             early_stop_counter = 0
@@ -234,10 +236,21 @@ def fit(
             result["is_best"] = False
             early_stop_counter += 1
             if early_stop_counter >= es_patience:
-                print(f"Early stopping at epoch {epoch}.")
-                if save_epoch_checkpoints:
-                    save_checkpoint(model, epoch, optimizer, path=outpath)
-                break
+                should_stop = True
+
+        if epoch_callback is not None:
+            epoch_callback(
+                epoch=epoch,
+                history=history,
+                result=result,
+                best_val_loss=best_val_loss,
+                early_stop_counter=early_stop_counter,
+            )
+        if should_stop:
+            print(f"Early stopping at epoch {epoch}.")
+            if save_epoch_checkpoints:
+                save_checkpoint(model, epoch, optimizer, path=outpath)
+            break
 
     if restore_best_model:
         best_path = Path(outpath) / "best.pt"

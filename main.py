@@ -493,6 +493,38 @@ def main():
 
     start_time = time.time()
 
+    output_csv = experiment_dir / "training_history.csv"
+
+    def write_epoch_heartbeat(
+        *, epoch, history, result, best_val_loss, early_stop_counter
+    ):
+        partial = output_csv.with_name(f"{output_csv.name}.partial")
+        pd.DataFrame(history).to_csv(partial, index=False)
+        os.replace(partial, output_csv)
+        _write_json_atomic(
+            experiment_dir / "training_heartbeat.json",
+            {
+                "status": "training",
+                "updated_at": dt.datetime.now(dt.timezone.utc).astimezone().isoformat(),
+                "epoch_zero_based": int(epoch),
+                "epoch_one_based": int(epoch) + 1,
+                "epochs_requested": int(config["epochs"]),
+                "best_val_loss": float(best_val_loss),
+                "current_val_loss": float(result["val_loss"]),
+                "current_train_loss": float(result["train_loss"]),
+                "current_train_supervised_loss": (
+                    float(result["train_supervised_loss"])
+                    if "train_supervised_loss" in result else None
+                ),
+                "current_train_radiometric_consistency_loss": (
+                    float(result["train_radiometric_consistency_loss"])
+                    if "train_radiometric_consistency_loss" in result else None
+                ),
+                "early_stop_counter": int(early_stop_counter),
+                "is_best": bool(result["is_best"]),
+            },
+        )
+
     history = fit(
         epochs=config["epochs"],
         lr=config["learning_rate"],
@@ -512,14 +544,25 @@ def main():
             "resolved_env_features": env_vars,
             "training_design": training_design,
         },
+        epoch_callback=write_epoch_heartbeat,
     )
 
     elapsed_time = time.time() - start_time
     logging.info("Training completed in %.2f seconds", elapsed_time)
 
-    output_csv = experiment_dir / "training_history.csv"
     pd.DataFrame(history).to_csv(output_csv, index=False)
     logging.info("Training history saved to %s", output_csv)
+    _write_json_atomic(
+        experiment_dir / "training_heartbeat.json",
+        {
+            "status": "training_complete",
+            "updated_at": dt.datetime.now(dt.timezone.utc).astimezone().isoformat(),
+            "epochs_completed": len(history),
+            "epochs_requested": int(config["epochs"]),
+            "elapsed_seconds": elapsed_time,
+            "best_val_loss": min(float(item["val_loss"]) for item in history),
+        },
+    )
 
     plot_accuracies(history, str(experiment_dir))
     plot_losses(history, str(experiment_dir))
