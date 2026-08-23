@@ -110,6 +110,67 @@ def validate_support_audits(
     return failures
 
 
+def resolve_production_selection(
+    training: pd.DataFrame, blockcv_evidence_dir: Path, blockcv: dict
+) -> tuple[Path, dict]:
+    """Resolve one shared or one explicitly combined production selection."""
+    selection_paths = set()
+    for row in training.itertuples(index=False):
+        config = read_json(Path(row.config_path))
+        gate = config.get("selection_gate") or {}
+        selection_path = Path(gate.get("selection_manifest", ""))
+        if not selection_path.is_file():
+            raise FileNotFoundError(
+                f"Production config selection manifest is missing: {selection_path}"
+            )
+        if gate.get("selection_manifest_sha256") != sha256(selection_path):
+            raise ValueError(f"Production selection hash changed: {selection_path}")
+        selection_paths.add(selection_path.resolve())
+    if len(selection_paths) == 1:
+        production_selection_path = next(iter(selection_paths))
+    else:
+        combined_raw = blockcv.get("combined_production_selection_manifest")
+        if not combined_raw:
+            raise ValueError(
+                "Production fits use multiple selection manifests without an "
+                "identity-checked combined replacement manifest"
+            )
+        production_selection_path = Path(combined_raw)
+        if not production_selection_path.is_absolute():
+            production_selection_path = blockcv_evidence_dir / production_selection_path
+        if not production_selection_path.is_file():
+            raise FileNotFoundError(production_selection_path)
+        combined = read_json(production_selection_path)
+        sources = combined.get("source_production_selection_manifests") or []
+        observed_sources = {}
+        for source in sources:
+            source_path = Path(source.get("path", "")).resolve()
+            if source_path in observed_sources:
+                raise ValueError("Combined production selection has duplicate sources")
+            observed_sources[source_path] = source.get("sha256")
+        expected_sources = {
+            path: sha256(path) for path in selection_paths
+        }
+        if observed_sources != expected_sources:
+            raise ValueError("Combined production selection source identities changed")
+        if (
+            combined.get("status") != "complete"
+            or combined.get("selection_type")
+            != "blockcv_approved_recipe_for_production_fit"
+            or combined.get("selection_count") != len(HOSTS)
+            or {item.get("host") for item in combined.get("selections", [])}
+            != HOSTS
+        ):
+            raise ValueError("Combined production selection host set is invalid")
+    production_selection = read_json(production_selection_path)
+    if (
+        production_selection.get("blockcv_evidence_summary_sha256")
+        != sha256(blockcv_evidence_dir / "summary.json")
+    ):
+        raise ValueError("Production selection does not reference supplied BlockCV evidence")
+    return production_selection_path, production_selection
+
+
 def synthesize_acceptance(
     training_metrics: Path,
     blockcv_evidence_dir: Path,
@@ -134,27 +195,9 @@ def synthesize_acceptance(
         raise RuntimeError("Frozen BlockCV evidence is not production-ready")
     if not (blockcv_evidence_dir / "COMPLETED").is_file():
         raise FileNotFoundError(blockcv_evidence_dir / "COMPLETED")
-    selection_paths = set()
-    for row in training.itertuples(index=False):
-        config = read_json(Path(row.config_path))
-        gate = config.get("selection_gate") or {}
-        selection_path = Path(gate.get("selection_manifest", ""))
-        if not selection_path.is_file():
-            raise FileNotFoundError(
-                f"Production config selection manifest is missing: {selection_path}"
-            )
-        if gate.get("selection_manifest_sha256") != sha256(selection_path):
-            raise ValueError(f"Production selection hash changed: {selection_path}")
-        selection_paths.add(selection_path.resolve())
-    if len(selection_paths) != 1:
-        raise ValueError("Production fits do not share one frozen selection manifest")
-    production_selection_path = next(iter(selection_paths))
-    production_selection = read_json(production_selection_path)
-    if (
-        production_selection.get("blockcv_evidence_summary_sha256")
-        != sha256(blockcv_evidence_dir / "summary.json")
-    ):
-        raise ValueError("Production selection does not reference supplied BlockCV evidence")
+    production_selection_path, production_selection = resolve_production_selection(
+        training, blockcv_evidence_dir, blockcv
+    )
 
     raw_artifacts = load_artifact_rows(raw_artifact_roots)
     configured_artifacts = load_artifact_rows(

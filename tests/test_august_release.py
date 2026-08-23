@@ -19,6 +19,11 @@ from august2026_augmentation_screen_evidence import (
 import august2026_batch_artifact_probe as batch_artifact_probe
 from august2026_batch_artifact_probe import add_tanoak_coastal_comparison
 from august2026_record_visual_review import HOSTS, REVIEW_TARGETS, record_visual_review
+from august2026_final_model_acceptance import resolve_production_selection
+from august2026_assemble_ailanthus_replacement_inputs import (
+    combine_by_host,
+    combine_selections,
+)
 from august2026_native_mosaic_parity import run_parity, stable_tile_sample
 from august2026_render_fixed_quickviews import read_aligned_reference
 from august2026_run_augmentation_acceptance import (
@@ -327,6 +332,84 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_replacement_assembly_substitutes_only_ailanthus(self):
+        original = pd.DataFrame([
+            {"host": host, "experiment": f"old-{host}", "fold": fold}
+            for host in sorted(HOSTS) for fold in range(1, 6)
+        ])
+        replacement = pd.DataFrame([
+            {"host": "ailanthus_altissima", "experiment": "new-ailanthus", "fold": fold}
+            for fold in range(1, 6)
+        ])
+        combined = combine_by_host(
+            original, replacement, "test BlockCV", rows_per_host=5
+        )
+        self.assertEqual(len(combined), 25)
+        self.assertEqual(
+            set(combined.loc[combined["host"] == "ailanthus_altissima", "experiment"]),
+            {"new-ailanthus"},
+        )
+        self.assertEqual(
+            set(combined.loc[combined["host"] == "juglans_nigra", "experiment"]),
+            {"old-juglans_nigra"},
+        )
+        selections = combine_selections(
+            {"selections": [{"host": host, "value": "old"} for host in HOSTS]},
+            {"selections": [{"host": "ailanthus_altissima", "value": "new"}]},
+            "test",
+        )
+        by_host = {item["host"]: item["value"] for item in selections}
+        self.assertEqual(by_host["ailanthus_altissima"], "new")
+        self.assertEqual(by_host["juglans_nigra"], "old")
+
+    def test_final_acceptance_resolves_identity_checked_replacement_selection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            old_selection = root / "old_selection.json"
+            new_selection = root / "new_selection.json"
+            write_json(old_selection, {"status": "complete"})
+            write_json(new_selection, {"status": "complete"})
+            config_paths = []
+            for host in sorted(HOSTS):
+                source = new_selection if host == "ailanthus_altissima" else old_selection
+                config = root / "configs" / f"{host}.json"
+                write_json(config, {
+                    "selection_gate": {
+                        "selection_manifest": str(source),
+                        "selection_manifest_sha256": sha256(source),
+                    }
+                })
+                config_paths.append({"host": host, "config_path": str(config)})
+            blockcv_dir = root / "blockcv"
+            combined = root / "combined_production_selection.json"
+            summary = blockcv_dir / "summary.json"
+            write_json(summary, {
+                "status": "complete", "production_ready": True,
+                "combined_production_selection_manifest": str(combined),
+            })
+            write_json(combined, {
+                "status": "complete",
+                "selection_type": "blockcv_approved_recipe_for_production_fit",
+                "selection_count": 5,
+                "selections": [{"host": host} for host in sorted(HOSTS)],
+                "source_production_selection_manifests": [
+                    {"path": str(path), "sha256": sha256(path)}
+                    for path in (old_selection, new_selection)
+                ],
+                "blockcv_evidence_summary_sha256": sha256(summary),
+            })
+            path, payload = resolve_production_selection(
+                pd.DataFrame(config_paths), blockcv_dir, read_json(summary)
+            )
+            self.assertEqual(path, combined)
+            self.assertEqual(payload["selection_count"], 5)
+            payload["source_production_selection_manifests"][0]["sha256"] = "bad"
+            write_json(combined, payload)
+            with self.assertRaises(ValueError):
+                resolve_production_selection(
+                    pd.DataFrame(config_paths), blockcv_dir, read_json(summary)
+                )
+
     def test_dgx_run_chain_requires_complete_hashed_shard_coverage(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

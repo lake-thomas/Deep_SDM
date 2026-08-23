@@ -150,6 +150,19 @@ def _index_selection_chain(
         ):
             continue
         payload = read_json(manifest_path)
+        for source_key in (
+            "source_blockcv_selection_manifests",
+            "source_production_selection_manifests",
+        ):
+            for source in payload.get(source_key) or []:
+                raw = source.get("path")
+                if not raw:
+                    failures.append(f"selection_source_pointer:{source_key}")
+                    continue
+                source_path = Path(raw)
+                if not source_path.is_absolute():
+                    source_path = manifest_path.parent / source_path
+                queue.append((source_path, source.get("sha256")))
         for key in evidence_pointer_keys:
             pointer = _payload_pointer(
                 rows,
