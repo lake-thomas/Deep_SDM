@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 import numpy as np
@@ -40,6 +41,7 @@ from august2026_run_final_model_acceptance import (
 from august2026_run_ailanthus_replacement_acceptance import (
     probe_commands as replacement_probe_commands,
 )
+import august2026_run_ailanthus_blockcv_stage as ailanthus_blockcv_stage
 from august2026_release_evidence import (
     _index_dgx_run_chain,
     assemble_release_evidence,
@@ -335,6 +337,61 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_ailanthus_blockcv_stage_runs_folds_before_evidence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            selection = root / "selection.json"
+            selection.write_text("{}", encoding="utf-8")
+            registry = root / "design" / "experiment_registry.tsv"
+            metrics = registry.parent / "analysis" / "experiment_metrics.csv"
+            metrics.parent.mkdir(parents=True)
+            metrics.write_text("experiment\nexample\n", encoding="utf-8")
+            rows = [{"experiment": "fold1"}]
+            calls = []
+
+            def record_training(observed_registry, observed_rows, max_runs):
+                calls.append(("training", observed_registry, observed_rows, max_runs))
+
+            def record_evidence(*args, **kwargs):
+                calls.append(("evidence", args, kwargs))
+                return {"status": "complete", "production_ready": True}
+
+            with (
+                patch.object(ailanthus_blockcv_stage, "OUTPUT_BASE", root / "outputs"),
+                patch.object(
+                    ailanthus_blockcv_stage, "write_design",
+                    return_value=(registry, rows),
+                ),
+                patch.object(
+                    ailanthus_blockcv_stage, "run_experiments",
+                    side_effect=record_training,
+                ),
+                patch.object(
+                    ailanthus_blockcv_stage, "summarize_registry",
+                    return_value={"status": "complete"},
+                ),
+                patch.object(
+                    ailanthus_blockcv_stage, "sha256",
+                    return_value="a" * 64,
+                ),
+                patch.object(
+                    ailanthus_blockcv_stage, "synthesize_blockcv",
+                    side_effect=record_evidence,
+                ),
+            ):
+                result = ailanthus_blockcv_stage.run_stage(selection)
+
+            self.assertTrue(result["production_ready"])
+            self.assertEqual([item[0] for item in calls], ["training", "evidence"])
+            self.assertEqual(calls[0][1:], (registry, rows, None))
+            evidence_args, evidence_kwargs = calls[1][1], calls[1][2]
+            self.assertEqual(evidence_args[:2], (selection, metrics))
+            self.assertEqual(evidence_kwargs["expected_hosts"], {"ailanthus_altissima"})
+            self.assertEqual(
+                evidence_kwargs["expected_selection_type"],
+                "ailanthus_recipe_for_blockcv",
+            )
+
     def test_replacement_acceptance_runs_all_raw_and_configured_probes(self):
         commands = replacement_probe_commands(
             Path("registry.tsv"), Path("output"), "cuda", 64, True
