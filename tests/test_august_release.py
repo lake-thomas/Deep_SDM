@@ -43,6 +43,7 @@ from august2026_run_ailanthus_replacement_acceptance import (
 )
 import august2026_run_ailanthus_blockcv_stage as ailanthus_blockcv_stage
 import august2026_run_ailanthus_production_stage as ailanthus_production_stage
+import august2026_run_ailanthus_five_host_promotion as ailanthus_five_host_promotion
 from august2026_release_evidence import (
     _index_dgx_run_chain,
     assemble_release_evidence,
@@ -338,6 +339,70 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_ailanthus_five_host_promotion_assembles_before_final_gate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_registry = root / "original_registry.tsv"
+            original_acceptance = root / "original_acceptance.json"
+            replacement_acceptance = root / "replacement_acceptance.json"
+            for path in (
+                original_registry, original_acceptance, replacement_acceptance
+            ):
+                path.write_text("source\n", encoding="utf-8")
+            assembly_dir = root / "assembly"
+            combined_registry = assembly_dir / "production" / "registry.tsv"
+            combined_blockcv = assembly_dir / "blockcv"
+            calls = []
+
+            def record_assembly(*args):
+                calls.append(("assembly", args))
+                assembly_dir.mkdir()
+                write_json(assembly_dir / "summary.json", {"status": "complete"})
+                return {
+                    "production_registry": str(combined_registry),
+                    "blockcv_evidence_dir": str(combined_blockcv),
+                }
+
+            def record_final(*args, **kwargs):
+                calls.append(("final", args, kwargs))
+                return {"status": "complete", "production_ready_for_inference": True}
+
+            with (
+                patch.object(
+                    ailanthus_five_host_promotion, "PRODUCTION_OUTPUT_ROOT",
+                    root / "outputs",
+                ),
+                patch.object(
+                    ailanthus_five_host_promotion, "current_clean_commit",
+                    return_value="c" * 40,
+                ),
+                patch.object(
+                    ailanthus_five_host_promotion, "assemble_inputs",
+                    side_effect=record_assembly,
+                ),
+                patch.object(
+                    ailanthus_five_host_promotion, "run_final_acceptance",
+                    side_effect=record_final,
+                ),
+            ):
+                result = ailanthus_five_host_promotion.run_stage(
+                    original_registry,
+                    original_acceptance,
+                    replacement_acceptance,
+                    assembly_dir,
+                    "cuda",
+                    64,
+                    512,
+                    False,
+                )
+
+            self.assertTrue(result["production_ready_for_inference"])
+            self.assertEqual([item[0] for item in calls], ["assembly", "final"])
+            final_args, final_kwargs = calls[1][1], calls[1][2]
+            self.assertEqual(final_args[:2], (combined_registry, combined_blockcv))
+            self.assertEqual(final_args[3:], ("cuda", 64, 512))
+            self.assertFalse(final_kwargs["resume_completed"])
+
     def test_ailanthus_production_stage_runs_fit_before_acceptance(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
