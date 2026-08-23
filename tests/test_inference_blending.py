@@ -54,7 +54,21 @@ class BlendWindowUnitTests(unittest.TestCase):
             args = inference.parse_args()
         self.assertEqual(args.blend_window, "flat")
         self.assertEqual(args.blend_edge_floor, 0.05)
+        self.assertEqual(args.seed, 42)
         self.assertIsNone(args.platt_calibrator)
+
+    def test_tile_seed_is_stable_across_mount_prefixes_and_varies_by_tile(self):
+        first = inference.derive_tile_seed(
+            42, "/mnt/archive/states/NY/2021/raw/m_4107701_nw.tif"
+        )
+        remapped = inference.derive_tile_seed(
+            42, "/rsstu/archive/states/NY/2021/raw/m_4107701_nw.tif"
+        )
+        second = inference.derive_tile_seed(
+            42, "/mnt/archive/states/PA/2022/raw/m_4107701_nw.tif"
+        )
+        self.assertEqual(first, remapped)
+        self.assertNotEqual(first, second)
 
     def test_platt_transform_is_stable_bounded_and_monotonic(self):
         probabilities = np.array([0.0, 0.1, 0.5, 0.9, 1.0])
@@ -148,6 +162,7 @@ class BlendWindowIntegrationTests(unittest.TestCase):
         self.assertEqual(default[0]["blend_window"], "flat")
         self.assertIsNone(default[0]["blend_edge_floor"])
         self.assertEqual(default[4]["blend_window"], "flat")
+        self.assertEqual(default[4]["inference_seed"], "42")
         self.assertNotIn("blend_edge_floor", default[4])
 
     def test_hann_preserves_support_and_count_geometry(self):

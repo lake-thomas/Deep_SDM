@@ -14,7 +14,11 @@ import pandas as pd
 from august2026_summarize_experiments import read_json, sha256, write_json_atomic
 
 
-CODE_FILES = ["inference_multimodal_production.py", "model.py"]
+CODE_FILES = [
+    "inference_multimodal_production.py",
+    "august2026_inference_provenance.py",
+    "model.py",
+]
 SUPPORT_FILES = [
     "august2026_candidate_builder_provenance_audit.py",
     "august2026_inference_output_qa.py",
@@ -118,6 +122,7 @@ def prepare_bundle(
             "blend_edge_floor": 0.05,
             "deterministic_mc_samples": 1,
             "uncertainty_mc_samples": 10,
+            "base_seed": 42,
             "calibration": "candidate-specific configured release score space",
             "active_tiled_output_root": "/share/rkmeente/talake2/host_sdm_august2026/production_model_inference_august2026",
             "durable_mosaic_output_root": "/rsstu/users/r/rkmeente/DSFAS_GSV_NAIP/Host_NAIP_SDM/Outputs_Host_NAIP_SDMs/production_model_inference_august2026",

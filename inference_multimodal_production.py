@@ -91,6 +91,7 @@ from rasterio.windows import Window, from_bounds
 
 # Project-local imports. Keep model.py in the same directory or on PYTHONPATH.
 from model import build_model, normalize_model_type  # noqa: E402
+from august2026_inference_provenance import derive_tile_seed  # noqa: E402
 
 
 # -----------------------------------------------------------------------------
@@ -1017,6 +1018,7 @@ def run_inference_on_tile(
     blend_edge_floor: float = 0.05,
     platt_calibrator: dict | None = None,
     platt_calibrator_sha256: str | None = None,
+    inference_seed: int = 42,
 ) -> dict[str, Any]:
     """Run tiled inference for one NAIP tile."""
     blend_window = str(blend_window).strip().lower()
@@ -1034,6 +1036,9 @@ def run_inference_on_tile(
     )
     if platt_calibrator is not None and not platt_calibrator_sha256:
         raise ValueError("A calibrated inference run requires platt_calibrator_sha256")
+    inference_seed = int(inference_seed)
+    if not 0 <= inference_seed < 2**31:
+        raise ValueError("Per-tile inference seed must be in [0, 2^31)")
     if not weighted_blend:
         # Preserve the default flat pixel arithmetic and avoid allocating a
         # full-size floating weight accumulator.
@@ -1049,6 +1054,7 @@ def run_inference_on_tile(
         expected_tags = {
             "blend_window": blend_window,
             "score_space": score_space,
+            "inference_seed": str(inference_seed),
         }
         if weighted_blend:
             expected_tags["blend_edge_floor"] = f"{float(blend_edge_floor):.8g}"
@@ -1073,6 +1079,7 @@ def run_inference_on_tile(
             "blend_edge_floor": float(blend_edge_floor) if weighted_blend else None,
             "score_space": score_space,
             "platt_calibrator_sha256": platt_calibrator_sha256,
+            "inference_seed": inference_seed,
         }
 
     if req["env"] and (wc_rasters is None or ghm_raster is None):
@@ -1087,6 +1094,12 @@ def run_inference_on_tile(
         validate_mean_std_stats(topo_norm_stats, TOPO_IMAGE_BANDS, "topographic")
 
     start_time = time.time()
+    # Reset all inference RNGs per tile so shard order and resume/skip behavior
+    # cannot change MC-dropout probabilities for an otherwise identical tile.
+    np.random.seed(inference_seed % 2**32)
+    torch.manual_seed(inference_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(inference_seed)
     model.eval()
     if mc_samples > 1:
         enable_mc_dropout(model)
@@ -1289,6 +1302,7 @@ def run_inference_on_tile(
         blend_tags = {
             "blend_window": blend_window,
             "score_space": score_space,
+            "inference_seed": str(inference_seed),
         }
         if weighted_blend:
             blend_tags["blend_edge_floor"] = f"{float(blend_edge_floor):.8g}"
@@ -1350,6 +1364,7 @@ def run_inference_on_tile(
         "blend_edge_floor": float(blend_edge_floor) if weighted_blend else None,
         "score_space": score_space,
         "platt_calibrator_sha256": platt_calibrator_sha256,
+        "inference_seed": inference_seed,
         "elapsed_seconds": elapsed,
     }
     print(
@@ -1425,6 +1440,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--batch-size", type=int, default=None, help="Inference batch size. Default from config or 64.")
     parser.add_argument("--mc-samples", type=int, default=2, help="MC dropout passes for uncertainty. Use 1 for deterministic inference.")
+    parser.add_argument(
+        "--seed", type=int, default=42,
+        help="Base seed used to derive a stable, order-independent seed for each tile.",
+    )
     parser.add_argument("--min-image-valid-frac", type=float, default=0.25, help="Minimum valid nonzero NAIP pixel fraction for image models.")
     parser.add_argument("--no-amp", action="store_true", help="Disable CUDA automatic mixed precision.")
     parser.add_argument("--skip-existing", action="store_true", help="Skip tiles whose prediction and uncertainty rasters already exist.")
@@ -1446,6 +1465,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    if not 0 <= int(args.seed) <= 2**32 - 1:
+        raise ValueError("--seed must be between 0 and 2^32 - 1")
 
     config = load_json(args.config) or {}
     checkpoint_meta = load_checkpoint_state(args.checkpoint, torch.device("cpu"))
@@ -1566,6 +1588,7 @@ def main() -> None:
     try:
         for tile_fp in tqdm(tiles, desc="Processing tiles"):
             try:
+                tile_seed = derive_tile_seed(args.seed, tile_fp)
                 summary = run_inference_on_tile(
                     tile_fp=tile_fp,
                     output_dir=output_dir,
@@ -1596,6 +1619,7 @@ def main() -> None:
                     blend_edge_floor=float(args.blend_edge_floor),
                     platt_calibrator=platt_calibrator,
                     platt_calibrator_sha256=platt_calibrator_sha256,
+                    inference_seed=tile_seed,
                 )
                 summaries.append(summary)
             except Exception as exc:

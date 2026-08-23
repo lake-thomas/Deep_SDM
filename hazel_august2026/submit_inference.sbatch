@@ -85,6 +85,7 @@ cmd=(
   --stride "${STRIDE}"
   --batch-size "${BATCH_SIZE}"
   --mc-samples "${MC_SAMPLES}"
+  --seed 42
   --env-clip-conus
   --fast-topo-scalars
   --blend-window hann

@@ -14,6 +14,7 @@ import rasterio
 from rasterio.enums import Resampling
 
 from august2026_summarize_experiments import sha256, write_json_atomic
+from august2026_inference_provenance import derive_tile_seed
 
 
 def write_csv_atomic(path: Path, frame: pd.DataFrame) -> None:
@@ -39,6 +40,7 @@ def validate_triplet(
     expected_score_space: str,
     expected_calibrator_sha256: str | None,
     product: str,
+    expected_inference_seed: int | None = None,
 ) -> dict:
     failures = []
     with (
@@ -66,6 +68,8 @@ def validate_triplet(
             "blend_edge_floor": "0.05",
             "score_space": expected_score_space,
         }
+        if expected_inference_seed is not None:
+            expected_tags["inference_seed"] = str(int(expected_inference_seed))
         if expected_calibrator_sha256 is not None:
             expected_tags["platt_calibrator_sha256"] = expected_calibrator_sha256
         for label, raster in (
@@ -157,6 +161,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-score-space", required=True)
     parser.add_argument("--expected-calibrator-sha256", default=None)
     parser.add_argument("--product", choices=["deterministic", "uncertainty"], required=True)
+    parser.add_argument("--base-seed", type=int, default=42)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -200,6 +205,7 @@ def main() -> None:
                     args.expected_score_space,
                     args.expected_calibrator_sha256,
                     args.product,
+                    derive_tile_seed(args.base_seed, tile),
                 )
             )
         failed_tiles = [row for row in rows if not row["passed"]]
@@ -222,6 +228,7 @@ def main() -> None:
         "count_raster_count": len(indices["count"]),
         "expected_score_space": args.expected_score_space,
         "expected_calibrator_sha256": args.expected_calibrator_sha256,
+        "base_seed": args.base_seed,
         "failure_count": len(failures),
         "failures": failures,
         "tile_output_qa": str(detail_path.resolve()),
