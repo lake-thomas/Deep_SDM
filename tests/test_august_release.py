@@ -44,6 +44,7 @@ from august2026_run_ailanthus_replacement_acceptance import (
 import august2026_run_ailanthus_blockcv_stage as ailanthus_blockcv_stage
 import august2026_run_ailanthus_production_stage as ailanthus_production_stage
 import august2026_run_ailanthus_five_host_promotion as ailanthus_five_host_promotion
+import august2026_run_mc_stability_stage as mc_stability_stage
 from august2026_release_evidence import (
     _index_dgx_run_chain,
     assemble_release_evidence,
@@ -339,6 +340,68 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_mc_stability_stage_runs_matrix_before_synthesis(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            production_registry = root / "production.tsv"
+            final_acceptance = root / "acceptance.json"
+            production_registry.write_text("registry\n", encoding="utf-8")
+            write_json(final_acceptance, {"status": "complete"})
+            design_root = root / "design"
+            output_root = root / "outputs"
+            registry = design_root / "experiment_registry.tsv"
+            manifest = design_root / "analysis" / "mc_stability_manifest.csv"
+            rows = [{"experiment": "mc2"}]
+            calls = []
+
+            def record_design(*args):
+                calls.append(("design", args))
+                return registry, rows
+
+            def record_runs(*args, **kwargs):
+                calls.append(("runs", args, kwargs))
+
+            def record_manifest(*args):
+                calls.append(("manifest", args))
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text("host\nexample\n", encoding="utf-8")
+                return manifest
+
+            def record_evidence(*args):
+                calls.append(("evidence", args))
+                return {"status": "complete", "recommended_mc_samples": 5}
+
+            with (
+                patch.object(mc_stability_stage, "DESIGN_ROOT", design_root),
+                patch.object(mc_stability_stage, "OUTPUT_ROOT", output_root),
+                patch.object(
+                    mc_stability_stage, "write_design", side_effect=record_design
+                ),
+                patch.object(
+                    mc_stability_stage, "run_design", side_effect=record_runs
+                ),
+                patch.object(
+                    mc_stability_stage, "materialize_analysis_manifest",
+                    side_effect=record_manifest,
+                ),
+                patch.object(
+                    mc_stability_stage, "synthesize_evidence",
+                    side_effect=record_evidence,
+                ),
+            ):
+                result = mc_stability_stage.run_stage(
+                    production_registry, final_acceptance, False
+                )
+
+            self.assertEqual(result["recommended_mc_samples"], 5)
+            self.assertEqual(
+                [item[0] for item in calls],
+                ["design", "runs", "manifest", "evidence"],
+            )
+            self.assertEqual(calls[1][1], (registry, rows))
+            self.assertFalse(calls[1][2]["resume_completed"])
+            self.assertEqual(calls[3][1], (manifest, output_root / "evidence"))
+
     def test_ailanthus_five_host_promotion_assembles_before_final_gate(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
