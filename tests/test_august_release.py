@@ -42,6 +42,9 @@ from hazel_august2026.validate_submission_gate import (
     validate_bundle,
     validate_inference_qa,
 )
+from dgx_august2026.validate_dgx_bundle import (
+    validate_inference_qa as validate_dgx_inference_qa,
+)
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -417,6 +420,54 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("--expected-mc-samples", text)
         self.assertIn("--base-seed", text)
         self.assertIn("tile_manifest_sha256", text)
+        self.assertNotIn("sbatch", text)
+        self.assertNotIn("SLURM_", text)
+
+    def test_dgx_qa_gate_includes_seed_mc_count_and_output_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "tiles.txt"
+            manifest.write_text("/archive/tile.tif\n", encoding="utf-8")
+            output_root = root / "outputs"
+            summary = root / "qa" / "summary.json"
+            write_json(
+                summary,
+                {
+                    "status": "complete",
+                    "production_ready": True,
+                    "host": "ailanthus_altissima",
+                    "region": "east",
+                    "product": "uncertainty",
+                    "tile_manifest_sha256": sha256(manifest),
+                    "expected_tile_count": 1,
+                    "base_seed": 42,
+                    "expected_mc_samples": 5,
+                    "output_root": str(output_root.resolve()),
+                },
+            )
+            (summary.parent / "COMPLETED").write_text("complete\n", encoding="utf-8")
+            validate_dgx_inference_qa(
+                summary, manifest, "ailanthus_altissima", "east", "uncertainty",
+                1, 42, 5, output_root,
+            )
+            payload = read_json(summary)
+            payload["expected_mc_samples"] = 3
+            write_json(summary, payload)
+            with self.assertRaises(ValueError):
+                validate_dgx_inference_qa(
+                    summary, manifest, "ailanthus_altissima", "east",
+                    "uncertainty", 1, 42, 5, output_root,
+                )
+
+    def test_dgx_mosaic_runner_is_local_resumable_and_gated_by_qa_pair(self):
+        script = Path(__file__).resolve().parents[1] / "dgx_august2026" / "run_mosaic_host.sh"
+        text = script.read_text(encoding="utf-8")
+        self.assertIn("--deterministic-summary", text)
+        self.assertIn("--uncertainty-summary", text)
+        self.assertIn("august2026_native_mosaic_parity.py", text)
+        self.assertIn("august2026_render_fixed_quickviews.py", text)
+        self.assertIn("august2026_validate_mosaics.py", text)
+        self.assertIn(".partial.tif", text)
         self.assertNotIn("sbatch", text)
         self.assertNotIn("SLURM_", text)
 

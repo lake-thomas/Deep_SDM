@@ -22,7 +22,8 @@ TOP_LEVEL_SUPPORT = [
     "august2026_validate_mosaics.py", "august2026_summarize_experiments.py",
 ]
 DGX_SUPPORT = [
-    "run_inference_queue.sh", "run_inference_shard.sh", "validate_dgx_bundle.py",
+    "run_inference_queue.sh", "run_inference_shard.sh", "run_mosaic_host.sh",
+    "validate_dgx_bundle.py",
 ]
 GENERIC_SUPPORT = ["build_archive_manifests.py", "make_tile_shards.py", "resolve_production_candidate.py"]
 

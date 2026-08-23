@@ -42,13 +42,80 @@ def validate_bundle(root: Path, registry: Path | None = None) -> dict:
     return metadata
 
 
+def validate_inference_qa(
+    summary_path: Path,
+    tile_manifest: Path,
+    host: str,
+    region: str,
+    product: str,
+    expected_tile_count: int,
+    expected_base_seed: int,
+    expected_mc_samples: int,
+    expected_output_root: Path,
+) -> dict:
+    marker = summary_path.parent / "COMPLETED"
+    if not summary_path.is_file() or not marker.is_file():
+        raise FileNotFoundError(f"Inference QA package is incomplete: {summary_path}")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    expected = {
+        "status": "complete",
+        "production_ready": True,
+        "host": host,
+        "region": region,
+        "product": product,
+        "tile_manifest_sha256": sha256(tile_manifest),
+        "expected_tile_count": expected_tile_count,
+        "base_seed": expected_base_seed,
+        "expected_mc_samples": expected_mc_samples,
+        "output_root": str(expected_output_root.resolve()),
+    }
+    observed = {key: summary.get(key) for key in expected}
+    if observed != expected:
+        raise ValueError(
+            f"DGX inference QA identity or gate failed for {product}: "
+            f"expected={expected}, observed={observed}"
+        )
+    return summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle-root", type=Path, required=True)
     parser.add_argument("--registry", type=Path)
+    parser.add_argument("--tile-manifest", type=Path)
+    parser.add_argument("--host")
+    parser.add_argument("--region")
+    parser.add_argument("--expected-tile-count", type=int)
+    parser.add_argument("--deterministic-summary", type=Path)
+    parser.add_argument("--uncertainty-summary", type=Path)
+    parser.add_argument("--active-output-root", type=Path)
     args = parser.parse_args()
     payload = validate_bundle(args.bundle_root, args.registry)
-    print(json.dumps({"status": "complete", "bundle_type": payload["bundle_type"]}, indent=2))
+    qa_args = (
+        args.tile_manifest, args.host, args.region, args.expected_tile_count,
+        args.deterministic_summary, args.uncertainty_summary,
+        args.active_output_root,
+    )
+    if any(value is not None for value in qa_args):
+        if any(value is None for value in qa_args):
+            parser.error("DGX QA-pair validation requires every QA argument")
+        if args.expected_tile_count <= 0 or not args.tile_manifest.is_file():
+            raise ValueError("QA pair requires a positive count and tile manifest")
+        defaults = payload.get("inference_defaults") or {}
+        for product, summary in (
+            ("deterministic", args.deterministic_summary),
+            ("uncertainty", args.uncertainty_summary),
+        ):
+            validate_inference_qa(
+                summary, args.tile_manifest, args.host, args.region, product,
+                args.expected_tile_count, defaults["base_seed"],
+                defaults[f"{product}_mc_samples"],
+                args.active_output_root / args.region / args.host / product,
+            )
+    print(json.dumps({
+        "status": "complete", "bundle_type": payload["bundle_type"],
+        "qa_pair_validated": any(value is not None for value in qa_args),
+    }, indent=2))
 
 
 if __name__ == "__main__":
