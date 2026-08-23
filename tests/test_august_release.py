@@ -45,6 +45,7 @@ from hazel_august2026.validate_submission_gate import (
 from dgx_august2026.validate_dgx_bundle import (
     validate_inference_qa as validate_dgx_inference_qa,
 )
+from dgx_august2026.project_full_runtime import synthesize_projection
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -379,6 +380,7 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                             "prediction_count": 1,
                             "uncertainty_count": 1,
                             "count_count": 1,
+                            "elapsed_seconds": 10,
                             "base_seed": 42,
                             "mc_samples": 1 if product == "deterministic" else 5,
                             "production_registry_sha256": sha256(registry),
@@ -410,6 +412,7 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("--blend-edge-floor 0.05", text)
         self.assertIn("--skip-existing", text)
         self.assertIn("--seed", text)
+        self.assertIn("elapsed_seconds", text)
         self.assertNotIn("sbatch", text)
         self.assertNotIn("SLURM_", text)
 
@@ -481,6 +484,40 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("make_tile_shards.py", text)
         self.assertNotIn("sbatch", text)
         self.assertNotIn("SLURM_", text)
+
+    def test_dgx_runtime_projection_requires_complete_five_host_smoke(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            east = root / "east.txt"
+            west = root / "west.txt"
+            east.write_text("/tiles/e1.tif\n/tiles/e2.tif\n", encoding="utf-8")
+            west.write_text("/tiles/w1.tif\n", encoding="utf-8")
+            statuses = []
+            for host in sorted(HOSTS):
+                region = "west" if host == "notholithocarpus_densiflorus" else "east"
+                for product in ("deterministic", "uncertainty"):
+                    tile_list = root / "smoke" / host / f"{product}.txt"
+                    tile_list.parent.mkdir(parents=True, exist_ok=True)
+                    tile_list.write_text("/tiles/smoke.tif\n", encoding="utf-8")
+                    status = root / "status" / host / f"{product}.json"
+                    write_json(status, {
+                        "status": "completed", "returncode": 0,
+                        "host": host, "region": region, "product": product,
+                        "shard_id": "00000", "tile_list": str(tile_list),
+                        "tile_list_sha256": sha256(tile_list),
+                        "expected_tile_count": 1, "elapsed_seconds": 10,
+                    })
+                    statuses.append(status)
+            result = synthesize_projection(
+                statuses, {"east": east, "west": west}, root / "projection"
+            )
+            self.assertEqual(result["projected_serial_seconds"], 180.0)
+            self.assertEqual(result["host_count"], 5)
+            with self.assertRaises(ValueError):
+                synthesize_projection(
+                    statuses[:-1], {"east": east, "west": west},
+                    root / "incomplete_projection",
+                )
 
     def test_hazel_submission_gate_rejects_changed_bundle_and_qa_identity(self):
         with tempfile.TemporaryDirectory() as temp_dir:

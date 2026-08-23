@@ -48,6 +48,8 @@ if (( shard_count < 1 )); then
 fi
 
 bundle_metadata="${BUNDLE_ROOT}/bundle_metadata.json"
+registry_sha256="$(sha256sum "${PRODUCTION_REGISTRY}" | awk '{print $1}')"
+bundle_metadata_sha256="$(sha256sum "${bundle_metadata}" | awk '{print $1}')"
 base_seed="$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["inference_defaults"]["base_seed"])' "${bundle_metadata}")"
 mc_key="${PRODUCT}_mc_samples"
 expected_mc_samples="$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["inference_defaults"][sys.argv[2]])' "${bundle_metadata}" "${mc_key}")"
@@ -73,6 +75,7 @@ queue_root="${OUTPUT_ROOT}/_run_metadata/queues/${REGION}/${PRODUCT}"
 mkdir -p "${queue_root}"
 queue_status="${queue_root}/queue_status.json"
 started_at="$(date -Is)"
+started_epoch="$(date +%s)"
 printf '{"status":"running","region":"%s","product":"%s","host_count":%s,"shard_count":%s,"started_at":"%s"}\n' \
   "${REGION}" "${PRODUCT}" "${#HOSTS[@]}" "${shard_count}" "${started_at}" > "${queue_status}"
 
@@ -83,6 +86,37 @@ for host in "${HOSTS[@]}"; do
     if [[ ! -s "${tile_list}" ]]; then
       echo "Missing sequential shard ${tile_list}" >&2
       exit 6
+    fi
+    status_json="${OUTPUT_ROOT}/_run_metadata/status/${REGION}/${host}/${PRODUCT}/shard_${shard_id}.json"
+    if [[ -s "${status_json}" ]]; then
+      status_state="$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status", ""))' "${status_json}")"
+      if [[ "${status_state}" == "completed" ]]; then
+        tile_list_sha256="$(sha256sum "${tile_list}" | awk '{print $1}')"
+        expected_count="$(awk 'NF {count++} END {print count+0}' "${tile_list}")"
+        expected_output_dir="${OUTPUT_ROOT}/${REGION}/${host}/${PRODUCT}/shard_${shard_id}"
+        if [[ ! -d "${expected_output_dir}" ]]; then
+          echo "Completed shard output directory is missing: ${expected_output_dir}" >&2
+          exit 6
+        fi
+        actual_prediction_count="$(find "${expected_output_dir}" -maxdepth 1 -name '*_prediction.tif' 2>/dev/null | wc -l | tr -d ' ')"
+        actual_uncertainty_count="$(find "${expected_output_dir}" -maxdepth 1 -name '*_uncertainty.tif' 2>/dev/null | wc -l | tr -d ' ')"
+        actual_count_count="$(find "${expected_output_dir}" -maxdepth 1 -name '*_count.tif' 2>/dev/null | wc -l | tr -d ' ')"
+        if [[ "${actual_prediction_count}" != "${expected_count}" \
+          || "${actual_uncertainty_count}" != "${expected_count}" \
+          || "${actual_count_count}" != "${expected_count}" ]]; then
+          echo "Completed shard output count changed: ${status_json}" >&2
+          exit 6
+        fi
+        "${PYTHON_BIN}" -c 'import json,pathlib,sys
+d=json.load(open(sys.argv[1])); n=int(sys.argv[7]); expected={"status":"completed","returncode":0,"host":sys.argv[2],"region":sys.argv[3],"product":sys.argv[4],"shard_id":sys.argv[5],"tile_list_sha256":sys.argv[6],"expected_tile_count":n,"output_dir":str(pathlib.Path(sys.argv[8]).resolve()),"prediction_count":n,"uncertainty_count":n,"count_count":n,"base_seed":int(sys.argv[9]),"mc_samples":int(sys.argv[10]),"production_registry_sha256":sys.argv[11],"bundle_metadata_sha256":sys.argv[12]}
+ok=all(d.get(k)==v for k,v in expected.items()) and float(d.get("elapsed_seconds",-1))>=0
+raise SystemExit(0 if ok else 1)' \
+          "${status_json}" "${host}" "${REGION}" "${PRODUCT}" "${shard_id}" \
+          "${tile_list_sha256}" "${expected_count}" "${expected_output_dir}" \
+          "${base_seed}" "${expected_mc_samples}" "${registry_sha256}" \
+          "${bundle_metadata_sha256}"
+        continue
+      fi
     fi
     HOST_SLUG="${host}" REGION="${REGION}" PRODUCT="${PRODUCT}" \
       SHARD_ID="${shard_id}" TILE_LIST="${tile_list}" \
@@ -128,7 +162,9 @@ raise SystemExit(0 if all(d.get(k)==v for k,v in expected.items()) else 1)' \
 done
 
 completed_at="$(date -Is)"
-printf '{"status":"complete","region":"%s","product":"%s","host_count":%s,"shard_count":%s,"base_seed":%s,"mc_samples":%s,"tile_manifest":"%s","tile_manifest_sha256":"%s","started_at":"%s","completed_at":"%s"}\n' \
+completed_epoch="$(date +%s)"
+elapsed_seconds="$((completed_epoch - started_epoch))"
+printf '{"status":"complete","region":"%s","product":"%s","host_count":%s,"shard_count":%s,"base_seed":%s,"mc_samples":%s,"tile_manifest":"%s","tile_manifest_sha256":"%s","started_at":"%s","completed_at":"%s","elapsed_seconds":%s}\n' \
   "${REGION}" "${PRODUCT}" "${#HOSTS[@]}" "${shard_count}" "${base_seed}" \
   "${expected_mc_samples}" "${tile_manifest}" "${tile_manifest_sha256}" \
-  "${started_at}" "${completed_at}" > "${queue_status}"
+  "${started_at}" "${completed_at}" "${elapsed_seconds}" > "${queue_status}"

@@ -522,6 +522,12 @@ def _index_dgx_run_chain(
             continue
         if payload.get("status") != "completed" or int(payload.get("returncode", -1)) != 0:
             failures.append(f"dgx_run_not_complete:{shard_key}")
+        try:
+            elapsed_seconds = float(payload.get("elapsed_seconds", -1))
+        except (TypeError, ValueError):
+            elapsed_seconds = -1
+        if elapsed_seconds < 0:
+            failures.append(f"dgx_run_elapsed_seconds:{shard_key}")
         if payload.get("production_registry_sha256") != registry_hash:
             failures.append(f"dgx_run_registry_hash:{shard_key}")
         if payload.get("bundle_metadata_sha256") != bundle_hash:

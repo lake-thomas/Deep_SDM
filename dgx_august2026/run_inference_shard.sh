@@ -63,6 +63,7 @@ if [[ -n "${CALIBRATOR_PATH}" ]]; then cmd+=(--platt-calibrator "${CALIBRATOR_PA
 status_json="${STATUS_DIR}/shard_${SHARD_ID}.json"
 log_file="${LOG_DIR}/shard_${SHARD_ID}.log"
 started_at="$(date -Is)"
+started_epoch="$(date +%s)"
 printf '{"status":"running","host":"%s","region":"%s","product":"%s","shard_id":"%s","started_at":"%s"}\n' "${HOST_SLUG}" "${REGION}" "${PRODUCT}" "${SHARD_ID}" "${started_at}" > "${status_json}"
 printf 'command=' > "${log_file}"; printf '%q ' "${cmd[@]}" >> "${log_file}"; printf '\n' >> "${log_file}"
 set +e; "${cmd[@]}" >> "${log_file}" 2>&1; rc="$?"; set -e
@@ -79,5 +80,7 @@ uncertainty_count="$(find "${OUT_DIR}" -maxdepth 1 -name '*_uncertainty.tif' | w
 count_count="$(find "${OUT_DIR}" -maxdepth 1 -name '*_count.tif' | wc -l | tr -d ' ')"
 status=completed; if [[ "${rc}" -ne 0 ]]; then status=failed; fi
 completed_at="$(date -Is)"
-printf '{"status":"%s","returncode":%s,"host":"%s","region":"%s","product":"%s","shard_id":"%s","tile_list":"%s","tile_list_sha256":"%s","expected_tile_count":%s,"output_dir":"%s","prediction_count":%s,"uncertainty_count":%s,"count_count":%s,"base_seed":%s,"mc_samples":%s,"production_registry_sha256":"%s","bundle_metadata_sha256":"%s","started_at":"%s","completed_at":"%s","log_file":"%s","experiment":"%s"}\n' "${status}" "${rc}" "${HOST_SLUG}" "${REGION}" "${PRODUCT}" "${SHARD_ID}" "${TILE_LIST}" "${tile_list_sha256}" "${expected_count}" "${OUT_DIR}" "${prediction_count}" "${uncertainty_count}" "${count_count}" "${base_seed}" "${mc_samples}" "${registry_sha256}" "${bundle_metadata_sha256}" "${started_at}" "${completed_at}" "${log_file}" "${EXPERIMENT}" > "${status_json}"
+completed_epoch="$(date +%s)"
+elapsed_seconds="$((completed_epoch - started_epoch))"
+printf '{"status":"%s","returncode":%s,"host":"%s","region":"%s","product":"%s","shard_id":"%s","tile_list":"%s","tile_list_sha256":"%s","expected_tile_count":%s,"output_dir":"%s","prediction_count":%s,"uncertainty_count":%s,"count_count":%s,"base_seed":%s,"mc_samples":%s,"production_registry_sha256":"%s","bundle_metadata_sha256":"%s","started_at":"%s","completed_at":"%s","elapsed_seconds":%s,"log_file":"%s","experiment":"%s"}\n' "${status}" "${rc}" "${HOST_SLUG}" "${REGION}" "${PRODUCT}" "${SHARD_ID}" "${TILE_LIST}" "${tile_list_sha256}" "${expected_count}" "${OUT_DIR}" "${prediction_count}" "${uncertainty_count}" "${count_count}" "${base_seed}" "${mc_samples}" "${registry_sha256}" "${bundle_metadata_sha256}" "${started_at}" "${completed_at}" "${elapsed_seconds}" "${log_file}" "${EXPERIMENT}" > "${status_json}"
 exit "${rc}"
