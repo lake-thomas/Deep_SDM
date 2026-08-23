@@ -85,6 +85,7 @@ def freeze_selection(
         "loss_strategy": row["loss_strategy"],
         "spatial_augmentation": row["spatial_augmentation"],
         "radiometric_augmentation": config["radiometric_augmentation"],
+        "radiometric_recipe": spec["radiometric_recipe"],
         "dropout": float(row["dropout"]),
         "label_smoothing": float(row["label_smoothing"]),
         "seed": int(spec.get("seed", config.get("seed", 42))),

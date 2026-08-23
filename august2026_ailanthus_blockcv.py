@@ -25,7 +25,9 @@ HOST = "ailanthus_altissima"
 
 def replacement_name(selection: dict, fold: int) -> str:
     arm = "db" if selection["arm"] == "domain_balanced" else "rnd"
-    rad = "rad1" if isinstance(selection["radiometric_augmentation"], dict) else "rad0"
+    rad = selection.get("radiometric_recipe")
+    if rad not in {"rad1", "rad2"}:
+        rad = "rad1" if isinstance(selection["radiometric_augmentation"], dict) else "rad0"
     return (
         f"stage05b_{HOST}_{arm}_bg{int(selection['background_target']):05d}_"
         f"posw_{rad}_d{int(round(selection['dropout'] * 100)):03d}_"

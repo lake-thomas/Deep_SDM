@@ -248,12 +248,14 @@ class AugustExperimentDesignTests(unittest.TestCase):
             "arm": "domain_balanced",
             "background_target": 20000,
             "radiometric_augmentation": {"enabled": True},
+            "radiometric_recipe": "rad2",
             "dropout": 0.35,
             "label_smoothing": 0.05,
         }
         names = [replacement_name(selection, fold) for fold in range(1, 6)]
         self.assertEqual(len(set(names)), 5)
         self.assertTrue(all(name.startswith("stage05b_ailanthus_altissima_") for name in names))
+        self.assertTrue(all("_rad2_" in name for name in names))
 
     def test_ailanthus_robustness_advancement_gates_are_conjunctive(self):
         import pandas as pd
