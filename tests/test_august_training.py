@@ -27,7 +27,11 @@ from august2026_compare_artifact_probe import (
 from august2026_batch_artifact_probe import reusable_completed_probe
 from august2026_dataset_screen_evidence import pareto_nondominated, synthesize
 from august2026_dataset_overlap_audit import build_overlap_audit, prepare_dataset
-from august2026_cross_host_pathway_audit import correlation_metrics, residualize
+from august2026_cross_host_pathway_audit import (
+    correlation_metrics,
+    residualize,
+    resolve_chip_path,
+)
 from august2026_final_model_acceptance import artifact_nonregression_gate
 from august2026_aligned_raster_correlation import aligned_raster_metrics
 from august2026_candidate_builder_provenance_audit import commit_matches
@@ -355,6 +359,22 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertEqual(correlated["n"], 100)
         self.assertAlmostEqual(correlated["pearson"], 1.0)
         self.assertAlmostEqual(correlated["spearman"], 1.0)
+
+    def test_cross_host_pathway_resolves_chips_from_configured_image_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset = root / "model_manifests" / "uniform_dataset.csv"
+            image_root = root / "materialized_host"
+            relative = Path("images") / "01" / "sample.tif"
+            expected = image_root / relative
+            expected.parent.mkdir(parents=True)
+            expected.write_bytes(b"chip")
+            dataset.parent.mkdir(parents=True)
+            dataset.write_text("chip_path\n", encoding="utf-8")
+            self.assertEqual(
+                resolve_chip_path(image_root, str(relative)).resolve(),
+                expected.resolve(),
+            )
 
     def test_cross_host_dataset_overlap_is_class_specific(self):
         with tempfile.TemporaryDirectory() as temp_dir:

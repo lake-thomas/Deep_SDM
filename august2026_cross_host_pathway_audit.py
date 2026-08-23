@@ -27,13 +27,14 @@ def write_csv_atomic(path: Path, frame: pd.DataFrame) -> None:
     os.replace(partial, path)
 
 
-def resolve_chip_path(dataset_path: Path, value: str) -> Path:
+def resolve_chip_path(image_root: Path, value: str) -> Path:
     path = Path(str(value).replace("\\", os.sep))
-    return path if path.is_absolute() else dataset_path.parent / path
+    return path if path.is_absolute() else image_root / path
 
 
 def select_support_rows(
     dataset_path: Path,
+    image_root: Path,
     origin: str,
     env_vars: list[str],
     samples_per_class: int,
@@ -52,7 +53,7 @@ def select_support_rows(
     output.insert(0, "origin_host", origin)
     output.insert(1, "origin_dataset", str(dataset_path.resolve()))
     output["resolved_chip_path"] = output["chip_path"].map(
-        lambda value: str(resolve_chip_path(dataset_path, value).resolve())
+        lambda value: str(resolve_chip_path(image_root, value).resolve())
     )
     missing = [path for path in output["resolved_chip_path"] if not Path(path).is_file()]
     if missing:
@@ -262,6 +263,7 @@ def main() -> None:
         [
             select_support_rows(
                 candidates[host]["dataset_path"],
+                Path(candidates[host]["config"]["image_dir"]),
                 host,
                 env_vars,
                 args.samples_per_origin_class,
@@ -339,6 +341,9 @@ def main() -> None:
                 "experiment": candidates[host]["experiment"],
                 "checkpoint_sha256": sha256(candidates[host]["checkpoint_path"]),
                 "dataset_sha256": sha256(candidates[host]["dataset_path"]),
+                "image_root": str(
+                    Path(candidates[host]["config"]["image_dir"]).resolve()
+                ),
                 **calibrator_provenance[host],
             }
             for host in HOSTS
