@@ -45,6 +45,7 @@ import august2026_run_ailanthus_blockcv_stage as ailanthus_blockcv_stage
 import august2026_run_ailanthus_production_stage as ailanthus_production_stage
 import august2026_run_ailanthus_five_host_promotion as ailanthus_five_host_promotion
 import august2026_run_mc_stability_stage as mc_stability_stage
+from august2026_prepare_dgx_inference_bundle import validate_mc_lineage
 from august2026_release_evidence import (
     _index_dgx_run_chain,
     assemble_release_evidence,
@@ -340,6 +341,38 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_dgx_bundle_requires_mc_evidence_from_same_accepted_registry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            registry = root / "production.tsv"
+            acceptance = root / "acceptance.json"
+            registry.write_text("accepted registry\n", encoding="utf-8")
+            write_json(acceptance, {"status": "complete"})
+            manifest = root / "mc_design" / "analysis" / "mc_manifest.csv"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("host\nexample\n", encoding="utf-8")
+            write_json(root / "mc_design" / "design_metadata.json", {
+                "status": "complete",
+                "production_registry_sha256": sha256(registry),
+                "final_acceptance_sha256": sha256(acceptance),
+            })
+            mc = {
+                "manifest": str(manifest),
+                "manifest_sha256": sha256(manifest),
+            }
+
+            observed_manifest, observed_design = validate_mc_lineage(
+                mc, registry, acceptance
+            )
+            self.assertEqual(observed_manifest, manifest)
+            self.assertEqual(
+                observed_design, root / "mc_design" / "design_metadata.json"
+            )
+
+            registry.write_text("different registry\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "not generated from this registry"):
+                validate_mc_lineage(mc, registry, acceptance)
+
     def test_mc_stability_stage_runs_matrix_before_synthesis(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

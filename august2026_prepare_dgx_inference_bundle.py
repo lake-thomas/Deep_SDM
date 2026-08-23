@@ -28,6 +28,27 @@ DGX_SUPPORT = [
 GENERIC_SUPPORT = ["build_archive_manifests.py", "make_tile_shards.py", "resolve_production_candidate.py"]
 
 
+def validate_mc_lineage(
+    mc: dict, registry: Path, acceptance_summary: Path
+) -> tuple[Path, Path]:
+    manifest = Path(mc.get("manifest", ""))
+    if not manifest.is_file() or sha256(manifest) != mc.get("manifest_sha256"):
+        raise ValueError("MC stability manifest is missing or changed")
+    design_metadata = manifest.parent.parent / "design_metadata.json"
+    if not design_metadata.is_file():
+        raise FileNotFoundError("MC stability design metadata is missing")
+    design = read_json(design_metadata)
+    if (
+        design.get("status") != "complete"
+        or design.get("production_registry_sha256") != sha256(registry)
+        or design.get("final_acceptance_sha256") != sha256(acceptance_summary)
+    ):
+        raise ValueError(
+            "MC stability evidence was not generated from this registry and acceptance"
+        )
+    return manifest, design_metadata
+
+
 def prepare_bundle(registry: Path, acceptance_summary: Path, mc_stability_summary: Path, output_dir: Path) -> dict:
     acceptance = read_json(acceptance_summary)
     if acceptance.get("status") != "complete" or not acceptance.get("production_ready_for_inference"):
@@ -48,6 +69,9 @@ def prepare_bundle(registry: Path, acceptance_summary: Path, mc_stability_summar
     mc_evidence = Path(mc["evidence"])
     if not mc_evidence.is_file() or sha256(mc_evidence) != mc["evidence_sha256"]:
         raise ValueError("MC stability evidence table changed")
+    mc_manifest, mc_design_metadata = validate_mc_lineage(
+        mc, registry, acceptance_summary
+    )
 
     code_root = Path(__file__).resolve().parent
     if subprocess.run(["git", "status", "--porcelain"], cwd=code_root, check=True, capture_output=True, text=True).stdout.strip():
@@ -71,6 +95,8 @@ def prepare_bundle(registry: Path, acceptance_summary: Path, mc_stability_summar
         "final_model_acceptance_summary.json": acceptance_summary,
         "mc_stability_summary.json": mc_stability_summary,
         "mc_stability_by_host.csv": mc_evidence,
+        "mc_stability_manifest.csv": mc_manifest,
+        "mc_stability_design_metadata.json": mc_design_metadata,
     }
     for name, source in copies.items():
         target = output_dir / name; shutil.copy2(source, target); hashes[name] = sha256(target)
