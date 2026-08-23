@@ -50,6 +50,9 @@ from august2026_ailanthus_consistency_screen import (
     build_config as build_ailanthus_consistency_config,
     experiment_name as ailanthus_consistency_experiment_name,
 )
+from august2026_freeze_ailanthus_robustness_selection import (
+    freeze_selection as freeze_ailanthus_screen_selection,
+)
 from august2026_ailanthus_blockcv import replacement_name
 from august2026_ailanthus_production_train import (
     replacement_name as replacement_production_name,
@@ -550,6 +553,77 @@ class AugustExperimentDesignTests(unittest.TestCase):
             config["august_experiment_spec"]["stage"],
             "ailanthus-radiometric-consistency-screen",
         )
+
+    def test_consistency_evidence_freezes_explicit_blockcv_lineage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            evidence_dir = root / "evidence"
+            run_dir = root / "run"
+            (run_dir / "checkpoints").mkdir(parents=True)
+            evidence_dir.mkdir()
+            dataset = root / "uniform.csv"
+            checkpoint = run_dir / "checkpoints" / "best.pt"
+            config_path = root / "config.json"
+            dataset.write_text("presence,split\n1,train\n", encoding="utf-8")
+            checkpoint.write_bytes(b"checkpoint")
+            config = {
+                "csv_path": str(dataset),
+                "image_dir": str(root / "images"),
+                "radiometric_augmentation": dict(STRONG_RADIOMETRIC),
+                "radiometric_consistency": {"enabled": True, "weight": 2.0},
+                "august_experiment_spec": {
+                    "radiometric_recipe": "rad2",
+                    "seed": 42,
+                },
+            }
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            experiment = "stage06_consistency_test"
+            evidence_path = evidence_dir / "candidate.csv"
+            pd.DataFrame([{
+                "experiment": experiment,
+                "host": "ailanthus_altissima",
+                "arm": "domain_balanced",
+                "background_target": 20000,
+                "loss_strategy": "pos_weight_bce",
+                "spatial_augmentation": "dihedral",
+                "dropout": 0.25,
+                "label_smoothing": 0.05,
+                "evidence_gate_passed": True,
+                "advancement_gate_passed": True,
+                "pareto_nondominated_within_screen": True,
+                "config_path": str(config_path),
+                "config_sha256": sha256(config_path),
+                "run_dir": str(run_dir),
+                "best_checkpoint_sha256": sha256(checkpoint),
+                "training_dataset_csv_sha256": sha256(dataset),
+                "artifact_comparison_summary": "matched.json",
+                "exact_overlap_summary": "exact.json",
+                "test_roc_auc_all_thresholds": 0.98,
+                "test_brier_score": 0.06,
+            }]).to_csv(evidence_path, index=False)
+            summary = {
+                "status": "complete",
+                "stage": "ailanthus-radiometric-consistency-screen",
+                "candidate_evidence": str(evidence_path),
+                "candidate_evidence_sha256": sha256(evidence_path),
+            }
+            (evidence_dir / "summary.json").write_text(
+                json.dumps(summary), encoding="utf-8"
+            )
+            (evidence_dir / "COMPLETED").write_text("complete\n", encoding="utf-8")
+            output = root / "selection.json"
+            frozen = freeze_ailanthus_screen_selection(
+                evidence_dir, experiment, "passed frozen gates", output, "c" * 40
+            )
+            selected = frozen["selections"][0]
+            self.assertEqual(
+                selected["source_screen_stage"],
+                "ailanthus-radiometric-consistency-screen",
+            )
+            self.assertEqual(
+                selected["radiometric_consistency"],
+                {"enabled": True, "weight": 2.0},
+            )
 
     def test_current_builder_snapshot_is_recoverable_from_head(self):
         code_root = Path(__file__).resolve().parents[1]
