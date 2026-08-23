@@ -773,6 +773,37 @@ def assemble_release_evidence(
                     index_rows, "release_mosaic", raster_path,
                     host=host, region=payload.get("region"), product=product,
                 )
+            status_raw = record.get("mosaic_status")
+            if status_raw:
+                if is_dgx and not record.get("mosaic_status_sha256"):
+                    failures.append(f"mosaic_execution_status_hash:{host}:{product}")
+                status_path = Path(status_raw)
+                if not status_path.is_absolute():
+                    status_path = path.parent / status_path
+                if _verified_index(
+                    index_rows, failures, "mosaic_execution_status", status_path,
+                    expected_sha256=record.get("mosaic_status_sha256"),
+                    failure_label=f"mosaic_execution_status:{host}:{product}",
+                    host=host, region=payload.get("region"), product=product,
+                ):
+                    status = read_json(status_path)
+                    if is_dgx and not status.get("output_sha256"):
+                        failures.append(f"mosaic_execution_raster_hash:{host}:{product}")
+                    if (
+                        status.get("output_sha256")
+                        and status.get("output_sha256") != record.get("sha256")
+                    ):
+                        failures.append(f"mosaic_execution_raster_hash:{host}:{product}")
+            elif is_dgx:
+                failures.append(f"mosaic_execution_status:{host}:{product}")
+            info_path = raster_path.with_name(f"{raster_path.stem}_gdalinfo.json")
+            if info_path.is_file():
+                _index(
+                    index_rows, "mosaic_gdalinfo", info_path,
+                    host=host, region=payload.get("region"), product=product,
+                )
+            elif is_dgx:
+                failures.append(f"mosaic_gdalinfo:{host}:{product}")
         quickview_path = _payload_pointer(
             index_rows, failures, payload, path, "quickview_summary",
             "fixed_scale_quickview_summary", host=host, region=payload.get("region"),
