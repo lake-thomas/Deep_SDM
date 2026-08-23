@@ -50,6 +50,7 @@ from august2026_ailanthus_production_train import (
     replacement_name as replacement_production_name,
 )
 from august2026_mc_stability_evidence import PairAccumulator, advancement_rule
+from august2026_mc_stability_screen import experiment_name as mc_experiment_name
 from august2026_combine_dataset_screen_evidence import HOSTS, combine_evidence
 from august2026_inference_output_qa import validate_triplet
 from august2026_prepare_mosaic_inputs import prepare_inputs
@@ -264,6 +265,14 @@ class AugustExperimentDesignTests(unittest.TestCase):
         self.assertEqual(metrics["pixel_count"], 3)
         self.assertAlmostEqual(metrics["mae"], 2 / 3)
         self.assertAlmostEqual(metrics["rmse"], np.sqrt(2 / 3))
+
+    def test_mc_stability_names_cover_the_frozen_factorial(self):
+        names = {
+            mc_experiment_name("ailanthus_altissima", level, seed)
+            for level in (2, 3, 5, 10) for seed in (42, 43)
+        }
+        self.assertEqual(len(names), 8)
+        self.assertTrue(all("ailanthus_altissima" in name for name in names))
 
     def test_ailanthus_replacement_blockcv_name_is_isolated(self):
         selection = {
