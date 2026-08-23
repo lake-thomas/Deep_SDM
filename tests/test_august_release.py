@@ -320,6 +320,15 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_dgx_shard_runner_is_local_seeded_hann_and_resumable(self):
+        script = Path(__file__).resolve().parents[1] / "dgx_august2026" / "run_inference_shard.sh"
+        text = script.read_text(encoding="utf-8")
+        self.assertIn("--blend-window hann", text)
+        self.assertIn("--blend-edge-floor 0.05", text)
+        self.assertIn("--skip-existing", text)
+        self.assertIn("--seed", text)
+        self.assertNotIn("sbatch", text)
+        self.assertNotIn("SLURM_", text)
     def test_hazel_submission_gate_rejects_changed_bundle_and_qa_identity(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
