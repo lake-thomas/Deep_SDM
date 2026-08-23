@@ -16,6 +16,7 @@ from august2026_augmentation_screen_evidence import (
     factorial_effect_contrasts,
     fill_missing_tanoak_coastal_evidence,
 )
+import august2026_batch_artifact_probe as batch_artifact_probe
 from august2026_batch_artifact_probe import add_tanoak_coastal_comparison
 from august2026_record_visual_review import HOSTS, REVIEW_TARGETS, record_visual_review
 from august2026_native_mosaic_parity import run_parity, stable_tile_sample
@@ -25,6 +26,7 @@ from august2026_run_augmentation_acceptance import (
     probe_commands,
 )
 from august2026_run_final_model_acceptance import (
+    _resume_status,
     adopt_completed_support_step,
     final_probe_commands,
     run_command_step,
@@ -476,6 +478,53 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             for score, _, _, _, command in commands:
                 self.assertEqual(command[command.index("--score-space") + 1], score)
                 self.assertIn("--resume-completed", command)
+
+    def test_batch_probe_imports_configured_score_calibrator_validator(self):
+        calibrator = batch_artifact_probe.inference.validate_platt_calibrator(
+            {
+                "method": "platt_logistic_on_validation_logits",
+                "intercept": -0.2,
+                "slope": 0.8,
+            }
+        )
+        self.assertEqual(calibrator["slope"], 0.8)
+
+    def test_final_resume_records_ancestor_commit_upgrade(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            registry = root / "registry.tsv"
+            metrics = root / "metrics.csv"
+            blockcv = root / "blockcv.json"
+            for path in (registry, metrics, blockcv):
+                path.write_text(path.name, encoding="utf-8")
+            code_root = Path(__file__).resolve().parents[1]
+            current = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=code_root, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+            previous = subprocess.run(
+                ["git", "rev-parse", "HEAD^"], cwd=code_root, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+            status_path = root / "status.json"
+            write_json(
+                status_path,
+                {
+                    "registry_sha256": sha256(registry),
+                    "training_metrics_sha256": sha256(metrics),
+                    "blockcv_summary_sha256": sha256(blockcv),
+                    "code_commit": previous,
+                    "device": "cuda",
+                    "batch_size": 64,
+                    "samples_per_origin_class": 512,
+                },
+            )
+            status = _resume_status(
+                status_path, registry, metrics, blockcv, current, "cuda", 64, 512,
+                allow_code_commit_upgrade=True, code_root=code_root,
+            )
+            self.assertEqual(status["code_commit"], current)
+            self.assertEqual(status["code_commit_history"], [previous])
 
     def test_final_acceptance_adopts_only_hash_matched_support_audit(self):
         with tempfile.TemporaryDirectory() as temp_dir:

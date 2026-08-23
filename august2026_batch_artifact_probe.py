@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+import inference_multimodal_production as inference
+
 from august2026_compare_artifact_probe import (
     BASELINE_METRICS,
     BASELINE_SHA256,

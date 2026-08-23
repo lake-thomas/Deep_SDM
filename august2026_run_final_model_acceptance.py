@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import subprocess
 import sys
@@ -98,6 +99,8 @@ def _resume_status(
     device: str,
     batch_size: int,
     samples_per_origin_class: int,
+    allow_code_commit_upgrade: bool = False,
+    code_root: Path | None = None,
 ) -> dict:
     status = read_json(status_path)
     expected = {
@@ -110,12 +113,40 @@ def _resume_status(
         "samples_per_origin_class": samples_per_origin_class,
     }
     observed = {key: status.get(key) for key in expected}
-    if observed != expected:
-        raise ValueError(
-            f"Final acceptance resume identity changed: expected={expected}, "
-            f"observed={observed}"
+    if observed == expected:
+        return status
+    changed = {key for key in expected if observed.get(key) != expected[key]}
+    if allow_code_commit_upgrade and changed == {"code_commit"}:
+        if code_root is None:
+            raise ValueError("Code root is required for a resume commit upgrade")
+        previous_commit = str(observed["code_commit"])
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", previous_commit, code_commit],
+            cwd=code_root,
         )
-    return status
+        if ancestor.returncode != 0:
+            raise ValueError(
+                "Refusing final acceptance resume from a non-ancestor code commit"
+            )
+        status.setdefault("code_commit_history", []).append(previous_commit)
+        status.setdefault("resume_code_commit_upgrades", []).append(
+            {
+                "previous_commit": previous_commit,
+                "new_commit": code_commit,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "reason": (
+                    "Resume after a configured-score probe code-path fix; completed "
+                    "probe outputs are retained and identity-checked."
+                ),
+            }
+        )
+        status["code_commit"] = code_commit
+        write_json_atomic(status_path, status)
+        return status
+    raise ValueError(
+        f"Final acceptance resume identity changed: expected={expected}, "
+        f"observed={observed}"
+    )
 
 
 def run_command_step(
@@ -171,6 +202,7 @@ def run_final_acceptance(
     batch_size: int,
     samples_per_origin_class: int,
     resume_completed: bool = False,
+    allow_code_commit_upgrade: bool = False,
 ) -> dict:
     training_status = summarize_registry(registry, allow_incomplete=False)
     if (
@@ -200,6 +232,8 @@ def run_final_acceptance(
         status = _resume_status(
             status_path, registry, training_metrics, blockcv_summary,
             code_commit, device, batch_size, samples_per_origin_class,
+            allow_code_commit_upgrade=allow_code_commit_upgrade,
+            code_root=code_root,
         )
     else:
         output_root.mkdir(parents=True, exist_ok=True)
@@ -348,6 +382,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--samples-per-origin-class", type=int, default=512)
     parser.add_argument("--resume-completed", action="store_true")
+    parser.add_argument(
+        "--allow-code-commit-upgrade",
+        action="store_true",
+        help=(
+            "On resume, permit only an ancestor-to-descendant clean code-commit "
+            "upgrade while retaining hash-validated completed probes."
+        ),
+    )
     args = parser.parse_args()
     if args.batch_size <= 0 or args.samples_per_origin_class <= 0:
         parser.error("Batch and common-support sample sizes must be positive")
@@ -366,6 +408,7 @@ def main() -> None:
         args.batch_size,
         args.samples_per_origin_class,
         resume_completed=args.resume_completed,
+        allow_code_commit_upgrade=args.allow_code_commit_upgrade,
     )
     print(json.dumps(status, indent=2))
 
