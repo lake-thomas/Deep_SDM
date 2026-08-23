@@ -194,6 +194,36 @@ def adopt_completed_support_step(
     return True
 
 
+def record_failed_final_status(
+    status: dict,
+    status_path: Path,
+    output_root: Path,
+    summary_path: Path,
+) -> dict:
+    failed_final = read_json(summary_path)
+    if (
+        failed_final.get("status") != "complete"
+        or failed_final.get("production_ready_for_inference") is not False
+    ):
+        raise ValueError("Final acceptance failure summary is incomplete or inconsistent")
+    status.pop("active_step", None)
+    status.update(
+        {
+            "status": "complete_with_failures",
+            "completed_step_count": len(status.get("completed_steps", [])),
+            "production_ready_for_inference": False,
+            "final_model_acceptance": str(summary_path.resolve()),
+            "final_model_acceptance_sha256": sha256(summary_path),
+            "failures": failed_final.get("failures", []),
+        }
+    )
+    write_json_atomic(status_path, status)
+    (output_root / "COMPLETED").write_text(
+        "completed_with_failures\n", encoding="utf-8"
+    )
+    return status
+
+
 def run_final_acceptance(
     registry: Path,
     blockcv_evidence_dir: Path,
@@ -332,29 +362,36 @@ def run_final_acceptance(
         ):
             raise RuntimeError("Existing final model acceptance is not reusable")
     else:
-        final = synthesize_acceptance(
-            training_metrics,
-            blockcv_evidence_dir,
-            [
-                output_root / "artifacts" / "raw" / "matched" / host
-                for host in sorted(HOSTS)
-            ],
-            [
-                output_root / "artifacts" / "configured" / "matched" / host
-                for host in sorted(HOSTS)
-            ],
-            [
-                output_root / "artifacts" / "raw" / "exact_overlap" / host
-                for host in sorted(EASTERN_HOSTS)
-            ],
-            [
-                output_root / "artifacts" / "configured" / "exact_overlap" / host
-                for host in sorted(EASTERN_HOSTS)
-            ],
-            overlap_root / "summary.json",
-            pathway_root / "summary.json",
-            final_root,
-        )
+        try:
+            final = synthesize_acceptance(
+                training_metrics,
+                blockcv_evidence_dir,
+                [
+                    output_root / "artifacts" / "raw" / "matched" / host
+                    for host in sorted(HOSTS)
+                ],
+                [
+                    output_root / "artifacts" / "configured" / "matched" / host
+                    for host in sorted(HOSTS)
+                ],
+                [
+                    output_root / "artifacts" / "raw" / "exact_overlap" / host
+                    for host in sorted(EASTERN_HOSTS)
+                ],
+                [
+                    output_root / "artifacts" / "configured" / "exact_overlap" / host
+                    for host in sorted(EASTERN_HOSTS)
+                ],
+                overlap_root / "summary.json",
+                pathway_root / "summary.json",
+                final_root,
+            )
+        except RuntimeError:
+            summary_path = final_root / "summary.json"
+            if not summary_path.is_file():
+                raise
+            record_failed_final_status(status, status_path, output_root, summary_path)
+            raise
 
     status.pop("active_step", None)
     status.update(

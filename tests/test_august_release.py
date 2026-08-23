@@ -29,6 +29,7 @@ from august2026_run_final_model_acceptance import (
     _resume_status,
     adopt_completed_support_step,
     final_probe_commands,
+    record_failed_final_status,
     run_command_step,
 )
 from august2026_release_evidence import assemble_release_evidence
@@ -414,6 +415,35 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(status_path.read_text(encoding="utf-8"))["completed_steps"],
                 ["raw:matched:test_host"],
+            )
+
+    def test_final_acceptance_records_completed_failed_gate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            status_path = root / "acceptance_status.json"
+            summary_path = root / "final_model_acceptance" / "summary.json"
+            write_json(
+                summary_path,
+                {
+                    "status": "complete",
+                    "production_ready_for_inference": False,
+                    "failures": ["test_host: boundary_regression"],
+                },
+            )
+            status = {
+                "status": "running",
+                "active_step": "support:pathway_audit",
+                "completed_steps": ["probe", "support"],
+            }
+            record_failed_final_status(status, status_path, root, summary_path)
+            recorded = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(recorded["status"], "complete_with_failures")
+            self.assertEqual(recorded["completed_step_count"], 2)
+            self.assertFalse(recorded["production_ready_for_inference"])
+            self.assertNotIn("active_step", recorded)
+            self.assertEqual(
+                (root / "COMPLETED").read_text(encoding="utf-8"),
+                "completed_with_failures\n",
             )
 
     def test_augmentation_resume_records_ancestor_commit_upgrade(self):
