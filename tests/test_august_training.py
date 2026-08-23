@@ -40,6 +40,11 @@ from august2026_ailanthus_robustness_screen import (
     candidate_recipes as ailanthus_robustness_recipes,
     experiment_name as ailanthus_robustness_experiment_name,
 )
+from august2026_ailanthus_robustness_evidence import (
+    EXACT_OVERLAP_MAXIMUM,
+    MATCHED_BOUNDARY_MAXIMUM,
+    add_advancement_gates,
+)
 from august2026_combine_dataset_screen_evidence import HOSTS, combine_evidence
 from august2026_inference_output_qa import validate_triplet
 from august2026_prepare_mosaic_inputs import prepare_inputs
@@ -237,6 +242,37 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_ailanthus_robustness_advancement_gates_are_conjunctive(self):
+        import pandas as pd
+
+        common = {
+            "test_roc_auc_all_thresholds": 0.98,
+            "test_brier_score": 0.06,
+            "exact_overlap_candidate_absolute_shift_mean": 0.15,
+            "test_calibration_binary_log_loss": 0.22,
+            "test_calibration_calibration_slope": 1.1,
+            "test_calibration_calibration_intercept": -1.0,
+            "test_calibration_expected_calibration_error": 0.06,
+        }
+        frame = pd.DataFrame(
+            [
+                {**common, "artifact_candidate_absolute_did_mean": 0.09},
+                {
+                    **common,
+                    "artifact_candidate_absolute_did_mean":
+                        MATCHED_BOUNDARY_MAXIMUM + 0.001,
+                },
+                {
+                    **common,
+                    "artifact_candidate_absolute_did_mean": 0.08,
+                    "exact_overlap_candidate_absolute_shift_mean":
+                        EXACT_OVERLAP_MAXIMUM + 0.001,
+                },
+            ]
+        )
+        result = add_advancement_gates(frame)
+        self.assertEqual(result["advancement_gate_passed"].tolist(), [True, False, False])
+
     def test_ailanthus_robustness_screen_is_bounded_and_unique(self):
         mild = {
             "enabled": True,
