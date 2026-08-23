@@ -35,6 +35,11 @@ from august2026_cross_host_pathway_audit import (
 from august2026_final_model_acceptance import artifact_nonregression_gate
 from august2026_aligned_raster_correlation import aligned_raster_metrics
 from august2026_candidate_builder_provenance_audit import commit_matches
+from august2026_ailanthus_robustness_screen import (
+    STRONG_RADIOMETRIC,
+    candidate_recipes as ailanthus_robustness_recipes,
+    experiment_name as ailanthus_robustness_experiment_name,
+)
 from august2026_combine_dataset_screen_evidence import HOSTS, combine_evidence
 from august2026_inference_output_qa import validate_triplet
 from august2026_prepare_mosaic_inputs import prepare_inputs
@@ -232,6 +237,30 @@ class AugustEndToEndSmokeTests(unittest.TestCase):
 
 
 class AugustExperimentDesignTests(unittest.TestCase):
+    def test_ailanthus_robustness_screen_is_bounded_and_unique(self):
+        mild = {
+            "enabled": True,
+            "probability": 0.8,
+            "scene_gain": 0.08,
+            "gamma": 0.06,
+            "contrast": 0.0627,
+            "band_gain": 0.02,
+            "band_offset": 0.01,
+            "max_mean_ndvi_shift": 0.0538,
+            "attempts": 3,
+        }
+        recipes = ailanthus_robustness_recipes(mild)
+        self.assertEqual(len(recipes), 5)
+        names = [ailanthus_robustness_experiment_name(item) for item in recipes]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(sum(item["recipe_label"] == "rad1" for item in recipes), 1)
+        self.assertEqual(sum(item["recipe_label"] == "rad2" for item in recipes), 4)
+        self.assertLessEqual(STRONG_RADIOMETRIC["scene_gain"], 0.14474023994201524)
+        self.assertLessEqual(STRONG_RADIOMETRIC["contrast"], 0.15723992553342825)
+        self.assertLessEqual(
+            STRONG_RADIOMETRIC["max_mean_ndvi_shift"], 0.0630348114243701
+        )
+
     def test_current_builder_snapshot_is_recoverable_from_head(self):
         code_root = Path(__file__).resolve().parents[1]
         names = ["candidate_manifests.py", "background.py", "naip.py"]
