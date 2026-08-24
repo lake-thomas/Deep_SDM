@@ -628,7 +628,12 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                 ),
                 patch.object(
                     ailanthus_blockcv_stage, "summarize_registry",
-                    return_value={"status": "complete"},
+                    return_value={
+                        "experiment_count": 5,
+                        "complete_gate_count": 5,
+                        "all_experiments_evidence_complete": True,
+                        "metrics_csv": str(metrics),
+                    },
                 ),
                 patch.object(
                     ailanthus_blockcv_stage, "sha256",

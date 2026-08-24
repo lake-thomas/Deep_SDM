@@ -14,6 +14,7 @@ from august2026_summarize_experiments import summarize_registry
 
 
 HOST = "ailanthus_altissima"
+EXPECTED_EXPERIMENT_COUNT = 5
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,10 +29,18 @@ def parse_args() -> argparse.Namespace:
 def run_stage(selection_manifest: Path) -> dict:
     registry, rows = write_design(selection_manifest)
     run_experiments(registry, rows, max_runs=None)
-    status = summarize_registry(registry)
-    metrics = registry.parent / "analysis" / "experiment_metrics.csv"
-    if status.get("status") != "complete" or not metrics.is_file():
-        raise RuntimeError("Ailanthus BlockCV training evidence is incomplete")
+    status = summarize_registry(registry, allow_incomplete=False)
+    if (
+        status["experiment_count"] != EXPECTED_EXPERIMENT_COUNT
+        or status["complete_gate_count"] != EXPECTED_EXPERIMENT_COUNT
+        or not status["all_experiments_evidence_complete"]
+    ):
+        raise RuntimeError(
+            f"Ailanthus BlockCV training evidence is incomplete: {status}"
+        )
+    metrics = Path(status["metrics_csv"])
+    if not metrics.is_file():
+        raise FileNotFoundError(metrics)
 
     selection_hash = sha256(selection_manifest)
     output_dir = (
