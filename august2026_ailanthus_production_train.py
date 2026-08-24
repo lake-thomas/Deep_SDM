@@ -39,7 +39,7 @@ def replacement_name(selection: dict) -> str:
     if isinstance(consistency, dict) and consistency.get("enabled", True):
         weight = float(consistency["weight"])
         consistency_suffix = f"_consw{int(round(weight * 100)):03d}"
-    elif consistency:
+    elif not isinstance(consistency, dict) and consistency:
         consistency_suffix = "_consw100"
     modality_probability = float(
         selection.get("image_modality_dropout_probability", 0.0)

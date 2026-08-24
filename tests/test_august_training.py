@@ -621,6 +621,16 @@ class AugustExperimentDesignTests(unittest.TestCase):
         ]
         self.assertTrue(all("_rad2_moddrop25_" in name for name in modality_names))
         self.assertTrue(set(names).isdisjoint(modality_names))
+        disabled_consistency_selection = {
+            **modality_selection,
+            "radiometric_consistency": {"enabled": False, "weight": 0.0},
+        }
+        disabled_names = [
+            replacement_name(disabled_consistency_selection, fold)
+            for fold in range(1, 6)
+        ]
+        self.assertEqual(modality_names, disabled_names)
+        self.assertTrue(all("consw" not in name for name in disabled_names))
 
     def test_ailanthus_replacement_production_name_preserves_lineage(self):
         selection = {
@@ -644,6 +654,10 @@ class AugustExperimentDesignTests(unittest.TestCase):
         modality_name = replacement_production_name(selection)
         self.assertIn("_rad2_moddrop10_", modality_name)
         self.assertNotEqual(name, modality_name)
+        selection["radiometric_consistency"] = {"enabled": False, "weight": 0.0}
+        disabled_consistency_name = replacement_production_name(selection)
+        self.assertEqual(modality_name, disabled_consistency_name)
+        self.assertNotIn("consw", disabled_consistency_name)
 
     def test_ailanthus_robustness_advancement_gates_are_conjunctive(self):
         import pandas as pd
