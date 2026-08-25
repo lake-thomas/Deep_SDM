@@ -44,6 +44,7 @@ from august2026_run_ailanthus_replacement_acceptance import (
 import august2026_run_ailanthus_blockcv_stage as ailanthus_blockcv_stage
 import august2026_run_ailanthus_production_stage as ailanthus_production_stage
 import august2026_run_ailanthus_five_host_promotion as ailanthus_five_host_promotion
+import august2026_ailanthus_replacement_acceptance as replacement_acceptance
 import august2026_run_mc_stability_stage as mc_stability_stage
 from august2026_prepare_dgx_inference_bundle import (
     validate_mc_lineage,
@@ -672,6 +673,93 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             self.assertIn("--resume-completed", command)
             self.assertEqual(command[command.index("--score-space") + 1], step.split(":")[0])
             self.assertTrue(str(output).endswith(f"{step.split(':')[1]}/ailanthus_altissima"))
+
+    def test_replacement_acceptance_synthesizes_configured_exact_series(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            experiment = "replacement-ailanthus"
+            selection = root / "selection.json"
+            blockcv = root / "blockcv"
+            blockcv.mkdir()
+            write_json(
+                blockcv / "summary.json",
+                {"status": "complete", "production_ready": True, "host_count": 1},
+            )
+            (blockcv / "COMPLETED").write_text("completed\n", encoding="utf-8")
+            write_json(
+                selection,
+                {
+                    "selection_type":
+                        "ailanthus_blockcv_approved_recipe_for_production_fit",
+                    "blockcv_evidence_summary_sha256": sha256(blockcv / "summary.json"),
+                },
+            )
+            config = root / "config.json"
+            write_json(
+                config,
+                {"selection_gate": {
+                    "selection_manifest": str(selection),
+                    "selection_manifest_sha256": sha256(selection),
+                }},
+            )
+            metrics = root / "metrics.csv"
+            pd.DataFrame([{
+                "host": "ailanthus_altissima",
+                "stage": "production-fit",
+                "experiment": experiment,
+                "config_path": str(config),
+                "best_checkpoint_sha256": "checkpoint",
+                "training_dataset_csv_sha256": "dataset",
+                "postfit_calibration": "none",
+            }]).to_csv(metrics, index=False)
+            registry = root / "registry.tsv"
+            registry.write_text("experiment\nreplacement-ailanthus\n", encoding="utf-8")
+            matched = pd.DataFrame([{
+                "experiment": experiment,
+                "artifact_checkpoint_sha256": "checkpoint",
+                "artifact_dataset_sha256": "dataset",
+                "artifact_score_space": "raw_sigmoid_probability",
+                "artifact_platt_calibrator_sha256": np.nan,
+                "artifact_baseline_absolute_did_mean": 0.1,
+                "artifact_candidate_absolute_did_mean": 0.05,
+            }])
+            exact = pd.DataFrame([{
+                "experiment": experiment,
+                "exact_overlap_checkpoint_sha256": "checkpoint",
+                "exact_overlap_dataset_sha256": "dataset",
+                "exact_overlap_score_space": "raw_sigmoid_probability",
+                "exact_overlap_platt_calibrator_sha256": np.nan,
+                "exact_overlap_baseline_absolute_shift_mean": 0.2,
+                "exact_overlap_candidate_absolute_shift_mean": 0.1,
+            }])
+            output = root / "acceptance"
+            with (
+                patch.object(
+                    replacement_acceptance, "summarize_registry",
+                    return_value={"metrics_csv": str(metrics)},
+                ),
+                patch.object(replacement_acceptance, "strict_evidence_gate"),
+                patch.object(
+                    replacement_acceptance, "load_artifact_rows",
+                    side_effect=[matched.copy(), matched.copy()],
+                ),
+                patch.object(
+                    replacement_acceptance, "load_exact_overlap_rows",
+                    side_effect=[exact.copy(), exact.copy()],
+                ),
+                patch.object(
+                    replacement_acceptance, "artifact_nonregression_gate",
+                    return_value={"passed": True, "allowed_maximum": 0.3},
+                ),
+            ):
+                result = replacement_acceptance.synthesize_acceptance(
+                    registry, blockcv,
+                    root / "raw_matched", root / "configured_matched",
+                    root / "raw_exact", root / "configured_exact", output,
+                )
+            self.assertTrue(result["production_ready_for_release_assembly"])
+            record = pd.read_csv(output / "ailanthus_replacement_acceptance.csv")
+            self.assertEqual(record.iloc[0]["configured_exact_candidate"], 0.1)
 
     def test_replacement_assembly_substitutes_only_ailanthus(self):
         original = pd.DataFrame([

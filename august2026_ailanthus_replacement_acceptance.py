@@ -144,7 +144,7 @@ def synthesize_acceptance(
     if pd.isna(expected_calibrator):
         expected_calibrator = None
     observed_matched_calibrator = configured["artifact_platt_calibrator_sha256"]
-    observed_exact_calibrator = configured_exact.iloc[0][
+    observed_exact_calibrator = exact_configured[
         "exact_overlap_platt_calibrator_sha256"
     ]
     if pd.isna(observed_matched_calibrator):
@@ -153,7 +153,7 @@ def synthesize_acceptance(
         observed_exact_calibrator = None
     if configured["artifact_score_space"] != expected_space:
         failures.append("configured_matched_score_space")
-    if exact_configured.iloc[0]["exact_overlap_score_space"] != expected_space:
+    if exact_configured["exact_overlap_score_space"] != expected_space:
         failures.append("configured_exact_score_space")
     if observed_matched_calibrator != expected_calibrator:
         failures.append("configured_matched_calibrator_hash")
@@ -177,8 +177,8 @@ def synthesize_acceptance(
     )
     configured_exact_gate = artifact_nonregression_gate(
         HOST,
-        exact_configured.iloc[0]["exact_overlap_baseline_absolute_shift_mean"],
-        exact_configured.iloc[0]["exact_overlap_candidate_absolute_shift_mean"],
+        exact_configured["exact_overlap_baseline_absolute_shift_mean"],
+        exact_configured["exact_overlap_candidate_absolute_shift_mean"],
     )
     for label, gate in (
         ("raw_matched_boundary_regression", raw_matched_gate),
@@ -206,7 +206,7 @@ def synthesize_acceptance(
             "exact_overlap_candidate_absolute_shift_mean"
         ],
         "raw_exact_allowed_maximum": raw_exact_gate["allowed_maximum"],
-        "configured_exact_candidate": exact_configured.iloc[0][
+        "configured_exact_candidate": exact_configured[
             "exact_overlap_candidate_absolute_shift_mean"
         ],
         "configured_exact_allowed_maximum": configured_exact_gate["allowed_maximum"],
