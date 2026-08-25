@@ -22,7 +22,7 @@ from august2026_production_train import (
 )
 
 
-DATE_TAG = "20260823"
+DATE_TAG = "20260825"
 HOST = "ailanthus_altissima"
 
 
