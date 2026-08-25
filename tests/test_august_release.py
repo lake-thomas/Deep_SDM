@@ -72,6 +72,7 @@ from dgx_august2026.project_full_runtime import synthesize_projection
 from dgx_august2026.run_compacted_shard_group import (
     EAST_HOSTS,
     inference_command,
+    resolve_durable_root,
     run_output_qa,
     schedule_groups,
     validate_staging_root,
@@ -1179,6 +1180,33 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             self.assertIn("--blend-window hann", joined)
             self.assertIn("--blend-edge-floor 0.05", joined)
             self.assertIn("--skip-existing", joined)
+
+    def test_compacted_trial_output_root_is_explicit_and_scoped(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir) / "project"
+            frozen = project / "Outputs_Host_NAIP_SDMs" / "production" / "accepted"
+            trial_base = (
+                project / "Outputs_Host_NAIP_SDMs"
+                / "experimental_model_runs_august2026"
+            )
+            trial = trial_base / "compacted_smoke"
+            self.assertEqual(
+                resolve_durable_root(frozen, None, project, False),
+                (frozen.resolve(), "production"),
+            )
+            with self.assertRaises(ValueError):
+                resolve_durable_root(frozen, trial, project, False)
+            self.assertEqual(
+                resolve_durable_root(frozen, trial, project, True),
+                (trial.resolve(), "explicitly_authorized_trial"),
+            )
+            with self.assertRaises(ValueError):
+                resolve_durable_root(frozen, trial_base, project, True)
+            with self.assertRaises(ValueError):
+                resolve_durable_root(
+                    frozen, project / "Outputs_Host_NAIP_SDMs" / "other",
+                    project, True,
+                )
 
     def test_compacted_queue_requires_explicit_full_manifest_authorization(self):
         with tempfile.TemporaryDirectory() as temp_dir:

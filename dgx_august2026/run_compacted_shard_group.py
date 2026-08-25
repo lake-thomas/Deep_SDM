@@ -57,6 +57,30 @@ def validate_staging_root(staging_base: Path, shard_stage: Path, output_root: Pa
         raise ValueError("Staging and durable output roots must be disjoint")
 
 
+def resolve_durable_root(
+    frozen_root: Path,
+    requested_root: Path | None,
+    project_root: Path,
+    authorize_trial_output_root: bool,
+) -> tuple[Path, str]:
+    """Resolve canonical production output or an explicitly scoped trial root."""
+    frozen = frozen_root.resolve()
+    if requested_root is None or requested_root.resolve() == frozen:
+        return frozen, "production"
+    if not authorize_trial_output_root:
+        raise ValueError("Requested output root differs from the frozen bundle root")
+    trial = requested_root.resolve()
+    allowed = (
+        project_root.resolve() / "Outputs_Host_NAIP_SDMs"
+        / "experimental_model_runs_august2026"
+    )
+    if trial == allowed or not trial.is_relative_to(allowed):
+        raise ValueError(f"Trial output root is outside the scoped experimental root: {trial}")
+    if frozen == trial or frozen.is_relative_to(trial) or trial.is_relative_to(frozen):
+        raise ValueError("Trial and frozen production output roots must be disjoint")
+    return trial, "explicitly_authorized_trial"
+
+
 def read_registry(path: Path) -> dict[str, dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream, delimiter="\t"))
@@ -238,9 +262,10 @@ def execute(args: argparse.Namespace) -> dict:
     bundle_metadata = args.bundle_root / "bundle_metadata.json"
     metadata = json.loads(bundle_metadata.read_text(encoding="utf-8"))
     defaults = metadata["inference_defaults"]
-    durable_root = Path(defaults["active_tiled_output_root"]).resolve()
-    if args.output_root is not None and args.output_root.resolve() != durable_root:
-        raise ValueError("Requested output root differs from the frozen bundle root")
+    durable_root, output_mode = resolve_durable_root(
+        Path(defaults["active_tiled_output_root"]), args.output_root,
+        args.project_root, args.authorize_trial_output_root,
+    )
     batch_size = int(defaults.get("batch_size", 128))
     if batch_size != 128:
         raise ValueError("Only the artifact-qualified batch size 128 is allowed")
@@ -286,7 +311,8 @@ def execute(args: argparse.Namespace) -> dict:
         "base_seed": base_seed, "uncertainty_mc_samples": uncertainty_mc,
         "bundle_metadata_sha256": sha256(bundle_metadata),
         "staging_base": str(args.staging_base.resolve()),
-        "durable_root": str(durable_root), "max_z_error": max_z_error,
+        "durable_root": str(durable_root), "output_mode": output_mode,
+        "max_z_error": max_z_error,
     }
     design_path = metadata_root / "design.json"
     if design_path.is_file():
@@ -428,6 +454,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", action="append", required=True)
     parser.add_argument("--staging-base", type=Path, default=Path("/home/ncsucnr/host_sdm_august2026_staging"))
     parser.add_argument("--output-root", type=Path, default=None)
+    parser.add_argument("--authorize-trial-output-root", action="store_true")
     parser.add_argument("--python-bin", type=Path, default=Path("/home/ncsucnr/miniforge3/envs/host-naip-sdm/bin/python"))
     parser.add_argument("--compaction-workers", type=int, default=4)
     parser.add_argument("--cleanup-staging", action="store_true")
