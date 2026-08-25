@@ -48,6 +48,8 @@ import august2026_ailanthus_replacement_acceptance as replacement_acceptance
 import august2026_mc_stability_screen as mc_stability_screen
 import august2026_run_mc_stability_stage as mc_stability_stage
 from august2026_prepare_dgx_inference_bundle import (
+    CODE_FILES,
+    TOP_LEVEL_SUPPORT,
     validate_mc_lineage,
     versioned_inference_root,
     visual_review_template,
@@ -98,6 +100,10 @@ def write_minimal_hazel_bundle(bundle: Path, registry: Path | None = None) -> No
 
 
 class AugustVisualReviewTests(unittest.TestCase):
+    def test_dgx_bundle_places_provenance_with_both_runtime_entrypoints(self):
+        self.assertIn("august2026_inference_provenance.py", CODE_FILES)
+        self.assertIn("august2026_inference_provenance.py", TOP_LEVEL_SUPPORT)
+
     def test_dgx_visual_review_template_is_complete_but_non_approving(self):
         template = visual_review_template()
         self.assertEqual(template["status"], "template_pending_human_review")

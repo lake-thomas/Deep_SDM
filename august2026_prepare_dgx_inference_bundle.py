@@ -17,7 +17,11 @@ from august2026_summarize_experiments import read_json, sha256, write_json_atomi
 
 CODE_FILES = ["inference_multimodal_production.py", "august2026_inference_provenance.py", "model.py"]
 TOP_LEVEL_SUPPORT = [
-    "august2026_inference_output_qa.py", "august2026_native_mosaic_parity.py",
+    # The QA entry point runs from the bundle root and imports provenance by
+    # module name. Keep a root-level copy as well as the inference-runtime copy
+    # under code_snapshot/ so the frozen bundle is self-contained.
+    "august2026_inference_provenance.py", "august2026_inference_output_qa.py",
+    "august2026_native_mosaic_parity.py",
     "august2026_prepare_mosaic_inputs.py", "august2026_render_fixed_quickviews.py",
     "august2026_record_visual_review.py", "august2026_release_evidence.py",
     "august2026_validate_mosaics.py", "august2026_summarize_experiments.py",
