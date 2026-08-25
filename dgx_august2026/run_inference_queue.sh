@@ -18,9 +18,16 @@ if [[ "${PRODUCT}" != "deterministic" && "${PRODUCT}" != "uncertainty" ]]; then
 fi
 
 PROJECT_ROOT="${PROJECT_ROOT:-/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}/Outputs_Host_NAIP_SDMs/production_model_inference_august2026}"
 PYTHON_BIN="${PYTHON_BIN:-/home/ncsucnr/miniforge3/envs/host-naip-sdm/bin/python}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
+bundle_metadata="${BUNDLE_ROOT}/bundle_metadata.json"
+configured_output_root="$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["inference_defaults"]["active_tiled_output_root"])' "${bundle_metadata}")"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${configured_output_root}}"
+"${PYTHON_BIN}" -c 'import pathlib,sys; raise SystemExit(0 if pathlib.Path(sys.argv[1]).resolve()==pathlib.Path(sys.argv[2]).resolve() else 1)' \
+  "${OUTPUT_ROOT}" "${configured_output_root}" || {
+  echo "OUTPUT_ROOT differs from the frozen bundle root" >&2
+  exit 3
+}
 metadata="${SHARD_DIR}/shard_metadata.json"
 for required in "${metadata}" "${SHARD_DIR}/COMPLETED" "${PRODUCTION_REGISTRY}" "${BUNDLE_ROOT}/COMPLETED"; do
   if [[ ! -s "${required}" ]]; then
@@ -47,7 +54,6 @@ if (( shard_count < 1 )); then
   exit 4
 fi
 
-bundle_metadata="${BUNDLE_ROOT}/bundle_metadata.json"
 registry_sha256="$(sha256sum "${PRODUCTION_REGISTRY}" | awk '{print $1}')"
 bundle_metadata_sha256="$(sha256sum "${bundle_metadata}" | awk '{print $1}')"
 base_seed="$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["inference_defaults"]["base_seed"])' "${bundle_metadata}")"

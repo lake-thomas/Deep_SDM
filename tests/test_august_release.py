@@ -45,9 +45,11 @@ import august2026_run_ailanthus_blockcv_stage as ailanthus_blockcv_stage
 import august2026_run_ailanthus_production_stage as ailanthus_production_stage
 import august2026_run_ailanthus_five_host_promotion as ailanthus_five_host_promotion
 import august2026_ailanthus_replacement_acceptance as replacement_acceptance
+import august2026_mc_stability_screen as mc_stability_screen
 import august2026_run_mc_stability_stage as mc_stability_stage
 from august2026_prepare_dgx_inference_bundle import (
     validate_mc_lineage,
+    versioned_inference_root,
     visual_review_template,
 )
 from august2026_release_evidence import (
@@ -358,6 +360,37 @@ class AugustVisualReviewTests(unittest.TestCase):
 
 
 class AugustReleaseEvidenceTests(unittest.TestCase):
+    def test_dgx_inference_root_is_versioned_by_final_acceptance(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            acceptance = root / "acceptance.json"
+            write_json(acceptance, {"status": "complete", "identity": "accepted"})
+            output = versioned_inference_root(acceptance, root / "inference")
+            self.assertEqual(output.parent, root / "inference")
+            self.assertIn(sha256(acceptance)[:10], output.name)
+            self.assertTrue(output.name.endswith("_20260825"))
+
+    def test_mc_roots_are_versioned_by_final_acceptance(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first = root / "first.json"
+            second = root / "second.json"
+            write_json(first, {"status": "complete", "identity": 1})
+            write_json(second, {"status": "complete", "identity": 2})
+            design_base = root / "designs"
+            output_base = root / "outputs"
+            first_roots = mc_stability_screen.versioned_roots(
+                first, design_base, output_base
+            )
+            second_roots = mc_stability_screen.versioned_roots(
+                second, design_base, output_base
+            )
+            self.assertNotEqual(first_roots, second_roots)
+            self.assertEqual(first_roots[0].parent, design_base)
+            self.assertEqual(first_roots[1].parent, output_base)
+            self.assertIn(sha256(first)[:10], first_roots[0].name)
+            self.assertTrue(first_roots[0].name.endswith("_20260825"))
+
     def test_dgx_bundle_requires_mc_evidence_from_same_accepted_registry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -404,8 +437,8 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             rows = [{"experiment": "mc2"}]
             calls = []
 
-            def record_design(*args):
-                calls.append(("design", args))
+            def record_design(*args, **kwargs):
+                calls.append(("design", args, kwargs))
                 return registry, rows
 
             def record_runs(*args, **kwargs):
@@ -422,8 +455,6 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                 return {"status": "complete", "recommended_mc_samples": 5}
 
             with (
-                patch.object(mc_stability_stage, "DESIGN_ROOT", design_root),
-                patch.object(mc_stability_stage, "OUTPUT_ROOT", output_root),
                 patch.object(
                     mc_stability_stage, "write_design", side_effect=record_design
                 ),
@@ -440,7 +471,8 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                 ),
             ):
                 result = mc_stability_stage.run_stage(
-                    production_registry, final_acceptance, False
+                    production_registry, final_acceptance, False,
+                    design_root=design_root, output_root=output_root,
                 )
 
             self.assertEqual(result["recommended_mc_samples"], 5)
@@ -925,6 +957,8 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("--skip-existing", text)
         self.assertIn("--seed", text)
         self.assertIn("elapsed_seconds", text)
+        self.assertIn("active_tiled_output_root", text)
+        self.assertIn("OUTPUT_ROOT differs from the frozen bundle root", text)
         self.assertNotIn("sbatch", text)
         self.assertNotIn("SLURM_", text)
 
@@ -935,6 +969,8 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("--expected-mc-samples", text)
         self.assertIn("--base-seed", text)
         self.assertIn("tile_manifest_sha256", text)
+        self.assertIn("active_tiled_output_root", text)
+        self.assertIn("OUTPUT_ROOT differs from the frozen bundle root", text)
         self.assertNotIn("sbatch", text)
         self.assertNotIn("SLURM_", text)
 

@@ -27,6 +27,22 @@ DGX_SUPPORT = [
     "run_inference_shard.sh", "run_mosaic_host.sh", "validate_dgx_bundle.py",
 ]
 GENERIC_SUPPORT = ["build_archive_manifests.py", "make_tile_shards.py", "resolve_production_candidate.py"]
+INFERENCE_DATE_TAG = "20260825"
+INFERENCE_OUTPUT_BASE = Path(
+    "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Outputs_Host_NAIP_SDMs/"
+    "production_model_inference_august2026"
+)
+
+
+def versioned_inference_root(
+    acceptance_summary: Path,
+    output_base: Path = INFERENCE_OUTPUT_BASE,
+) -> Path:
+    """Return the unique tiled-output root for one accepted model package."""
+    return (
+        output_base
+        / f"accepted_{sha256(acceptance_summary)[:10]}_{INFERENCE_DATE_TAG}"
+    )
 
 
 def visual_review_template() -> dict:
@@ -136,6 +152,7 @@ def prepare_bundle(registry: Path, acceptance_summary: Path, mc_stability_summar
     write_json_atomic(review_template_path, visual_review_template())
     hashes[review_template_path.name] = sha256(review_template_path)
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=code_root, check=True, capture_output=True, text=True).stdout.strip()
+    inference_root = versioned_inference_root(acceptance_summary)
     payload = {
         "status": "complete", "bundle_type": "accepted_august2026_dgx_hann_inference",
         "code_commit": commit, "source_registry": str(registry.resolve()),
@@ -150,7 +167,7 @@ def prepare_bundle(registry: Path, acceptance_summary: Path, mc_stability_summar
             "blend_edge_floor": 0.05, "base_seed": 42,
             "deterministic_mc_samples": 1, "uncertainty_mc_samples": recommended,
             "calibration": "candidate-specific configured release score space",
-            "active_tiled_output_root": "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Outputs_Host_NAIP_SDMs/production_model_inference_august2026",
+            "active_tiled_output_root": str(inference_root),
         },
         "guardrail": (
             "Run two-tile smoke shards and structural/tag QA before the full queue. "

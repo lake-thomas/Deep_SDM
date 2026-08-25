@@ -20,9 +20,16 @@ for required in "${TILE_LIST}" "${PRODUCTION_REGISTRY}" "${BUNDLE_ROOT}/COMPLETE
 done
 
 PROJECT_ROOT="${PROJECT_ROOT:-/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}/Outputs_Host_NAIP_SDMs/production_model_inference_august2026}"
 PYTHON_BIN="${PYTHON_BIN:-/home/ncsucnr/miniforge3/envs/host-naip-sdm/bin/python}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
+bundle_metadata="${BUNDLE_ROOT}/bundle_metadata.json"
+configured_output_root="$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["inference_defaults"]["active_tiled_output_root"])' "${bundle_metadata}")"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${configured_output_root}}"
+"${PYTHON_BIN}" -c 'import pathlib,sys; raise SystemExit(0 if pathlib.Path(sys.argv[1]).resolve()==pathlib.Path(sys.argv[2]).resolve() else 1)' \
+  "${OUTPUT_ROOT}" "${configured_output_root}" || {
+  echo "OUTPUT_ROOT differs from the frozen bundle root" >&2
+  exit 3
+}
 RUN_METADATA="${OUTPUT_ROOT}/_run_metadata"
 OUT_DIR="${OUTPUT_ROOT}/${REGION}/${HOST_SLUG}/${PRODUCT}/shard_${SHARD_ID}"
 STATUS_DIR="${RUN_METADATA}/status/${REGION}/${HOST_SLUG}/${PRODUCT}"
@@ -34,7 +41,6 @@ candidate_env="${STATUS_DIR}/shard_${SHARD_ID}_candidate.env"
 "${PYTHON_BIN}" "${BUNDLE_ROOT}/resolve_production_candidate.py" --registry "${PRODUCTION_REGISTRY}" --host "${HOST_SLUG}" --hpc-root "${PROJECT_ROOT}" > "${candidate_env}"
 source "${candidate_env}"
 
-bundle_metadata="${BUNDLE_ROOT}/bundle_metadata.json"
 registry_sha256="$(sha256sum "${PRODUCTION_REGISTRY}" | awk '{print $1}')"
 bundle_metadata_sha256="$(sha256sum "${bundle_metadata}" | awk '{print $1}')"
 tile_list_sha256="$(sha256sum "${TILE_LIST}" | awk '{print $1}')"

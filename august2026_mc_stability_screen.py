@@ -23,7 +23,7 @@ from august2026_experiments import (
 from august2026_mc_stability_evidence import PASS_LEVELS, REPLICATE_SEEDS
 
 
-DATE_TAG = "20260823"
+DATE_TAG = "20260825"
 EASTERN_HOSTS = HOSTS - {"notholithocarpus_densiflorus"}
 EASTERN_TILES = [
     Path(
@@ -48,13 +48,13 @@ TANOAK_TILES = [
 PROJECT_ROOT = Path(
     "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM"
 )
-OUTPUT_ROOT = (
+OUTPUT_BASE = (
     PROJECT_ROOT / "Outputs_Host_NAIP_SDMs" /
-    "experimental_model_runs_august2026" / "mc_stability_screen_20260823"
+    "experimental_model_runs_august2026"
 )
-DESIGN_ROOT = (
+DESIGN_BASE = (
     PROJECT_ROOT / "Host_Datasets_USBg_August2026" /
-    "experiment_designs_20260813" / "mc_stability_screen_20260823"
+    "experiment_designs_20260813"
 )
 PYTHON = Path("/home/ncsucnr/miniforge3/envs/host-naip-sdm/bin/python")
 
@@ -65,6 +65,17 @@ def experiment_name(host: str, mc_samples: int, seed: int) -> str:
 
 def host_tiles(host: str) -> list[Path]:
     return TANOAK_TILES if host == "notholithocarpus_densiflorus" else EASTERN_TILES
+
+
+def versioned_roots(
+    acceptance_path: Path,
+    design_base: Path = DESIGN_BASE,
+    output_base: Path = OUTPUT_BASE,
+) -> tuple[Path, Path]:
+    """Bind MC design and raster roots to one immutable acceptance summary."""
+    identity = sha256(acceptance_path)[:10]
+    label = f"mc_stability_screen_{identity}_{DATE_TAG}"
+    return design_base / label, output_base / label
 
 
 def _candidate(registry: pd.DataFrame, host: str) -> dict:
@@ -100,8 +111,16 @@ def _candidate(registry: pd.DataFrame, host: str) -> dict:
     }
 
 
-def write_design(registry_path: Path, acceptance_path: Path) -> tuple[Path, list[dict]]:
-    registry_out = DESIGN_ROOT / "experiment_registry.tsv"
+def write_design(
+    registry_path: Path,
+    acceptance_path: Path,
+    design_root: Path | None = None,
+    output_root: Path | None = None,
+) -> tuple[Path, list[dict]]:
+    resolved_design, resolved_output = versioned_roots(acceptance_path)
+    design_root = design_root or resolved_design
+    output_root = output_root or resolved_output
+    registry_out = design_root / "experiment_registry.tsv"
     if registry_out.exists():
         raise FileExistsError(f"Refusing to replace MC stability design: {registry_out}")
     acceptance = read_json(acceptance_path)
@@ -140,7 +159,7 @@ def write_design(registry_path: Path, acceptance_path: Path) -> tuple[Path, list
         raise RuntimeError("Refusing to freeze MC screen from a dirty tree")
 
     rows = []
-    tile_list_root = DESIGN_ROOT / "tile_lists"
+    tile_list_root = design_root / "tile_lists"
     for host in sorted(HOSTS):
         candidate = _candidate(registry, host)
         tiles = host_tiles(host)
@@ -171,12 +190,12 @@ def write_design(registry_path: Path, acceptance_path: Path) -> tuple[Path, list
                     "calibrator_sha256": candidate["calibrator_sha256"] or "",
                     "score_space": candidate["score_space"],
                     "experiment": name,
-                    "run_dir": str(OUTPUT_ROOT / name),
+                    "run_dir": str(output_root / name),
                     "status": "pending",
                     "note": "",
                 })
     write_tsv_atomic(registry_out, rows, list(rows[0]))
-    write_json_atomic(DESIGN_ROOT / "design_metadata.json", {
+    write_json_atomic(design_root / "design_metadata.json", {
         "status": "complete",
         "date_tag": DATE_TAG,
         "stage": "mc-stability-screen",
@@ -187,6 +206,9 @@ def write_design(registry_path: Path, acceptance_path: Path) -> tuple[Path, list
         "production_registry_sha256": sha256(registry_path),
         "final_acceptance": str(acceptance_path.resolve()),
         "final_acceptance_sha256": sha256(acceptance_path),
+        "acceptance_identity_tag": sha256(acceptance_path)[:10],
+        "design_root": str(design_root.resolve()),
+        "output_root": str(output_root.resolve()),
         "experiment_count": len(rows),
         "registry": str(registry_out),
         "domains": {
@@ -327,9 +349,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    existing_registry = DESIGN_ROOT / "experiment_registry.tsv"
+    design_root, output_root = versioned_roots(args.final_acceptance)
+    existing_registry = design_root / "experiment_registry.tsv"
     if args.resume_completed and existing_registry.is_file():
-        metadata = read_json(DESIGN_ROOT / "design_metadata.json")
+        metadata = read_json(design_root / "design_metadata.json")
         if (
             metadata.get("production_registry_sha256")
             != sha256(args.production_registry)
@@ -349,7 +372,10 @@ def main() -> None:
         ).to_dict("records")
         print(f"Resuming gated MC stability design: {registry}")
     else:
-        registry, rows = write_design(args.production_registry, args.final_acceptance)
+        registry, rows = write_design(
+            args.production_registry, args.final_acceptance,
+            design_root=design_root, output_root=output_root,
+        )
         print(f"Wrote gated MC stability design: {registry}")
     if args.run:
         run_design(registry, rows, args.resume_completed)

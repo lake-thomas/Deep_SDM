@@ -15,9 +15,16 @@ JUNE_REFERENCE_PREDICTION="$7"
 DETERMINISTIC_QA_SUMMARY="$8"
 UNCERTAINTY_QA_SUMMARY="$9"
 PROJECT_ROOT="${PROJECT_ROOT:-/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM}"
-ACTIVE_OUTPUT_ROOT="${ACTIVE_OUTPUT_ROOT:-${PROJECT_ROOT}/Outputs_Host_NAIP_SDMs/production_model_inference_august2026}"
-MOSAIC_OUTPUT_ROOT="${MOSAIC_OUTPUT_ROOT:-${ACTIVE_OUTPUT_ROOT}}"
 PYTHON_BIN="${PYTHON_BIN:-/home/ncsucnr/miniforge3/envs/host-naip-sdm/bin/python}"
+bundle_metadata="${BUNDLE_ROOT}/bundle_metadata.json"
+configured_output_root="$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["inference_defaults"]["active_tiled_output_root"])' "${bundle_metadata}")"
+ACTIVE_OUTPUT_ROOT="${ACTIVE_OUTPUT_ROOT:-${configured_output_root}}"
+"${PYTHON_BIN}" -c 'import pathlib,sys; raise SystemExit(0 if pathlib.Path(sys.argv[1]).resolve()==pathlib.Path(sys.argv[2]).resolve() else 1)' \
+  "${ACTIVE_OUTPUT_ROOT}" "${configured_output_root}" || {
+  echo "ACTIVE_OUTPUT_ROOT differs from the frozen bundle root" >&2
+  exit 3
+}
+MOSAIC_OUTPUT_ROOT="${MOSAIC_OUTPUT_ROOT:-${ACTIVE_OUTPUT_ROOT}}"
 TARGET_RES="${TARGET_RES:-256}"
 MOSAIC_ROOT="${MOSAIC_OUTPUT_ROOT}/mosaics/${REGION}/${HOST_SLUG}_epsg5070_zonesafe_august2026"
 LOG_ROOT="${MOSAIC_ROOT}/logs"

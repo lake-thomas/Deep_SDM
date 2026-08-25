@@ -12,10 +12,9 @@ import pandas as pd
 from august2026_experiments import read_json, sha256
 from august2026_mc_stability_evidence import PASS_LEVELS, synthesize_evidence
 from august2026_mc_stability_screen import (
-    DESIGN_ROOT,
-    OUTPUT_ROOT,
     materialize_analysis_manifest,
     run_design,
+    versioned_roots,
     write_design,
 )
 from august2026_run_augmentation_acceptance import current_clean_commit
@@ -25,10 +24,13 @@ CODE_ROOT = Path(__file__).resolve().parent
 
 
 def existing_design(
-    production_registry: Path, final_acceptance: Path
+    production_registry: Path,
+    final_acceptance: Path,
+    design_root: Path,
+    output_root: Path,
 ) -> tuple[Path, list[dict]]:
-    registry = DESIGN_ROOT / "experiment_registry.tsv"
-    metadata_path = DESIGN_ROOT / "design_metadata.json"
+    registry = design_root / "experiment_registry.tsv"
+    metadata_path = design_root / "design_metadata.json"
     if not registry.is_file() or not metadata_path.is_file():
         raise FileNotFoundError("Existing MC stability design is incomplete")
     metadata = read_json(metadata_path)
@@ -36,6 +38,8 @@ def existing_design(
         "production_registry_sha256": sha256(production_registry),
         "final_acceptance_sha256": sha256(final_acceptance),
         "code_commit": current_clean_commit(CODE_ROOT),
+        "design_root": str(design_root.resolve()),
+        "output_root": str(output_root.resolve()),
     }
     if any(metadata.get(key) != value for key, value in expected.items()):
         raise ValueError("MC stability resume identity changed")
@@ -65,17 +69,27 @@ def run_stage(
     production_registry: Path,
     final_acceptance: Path,
     resume_completed: bool,
+    design_root: Path | None = None,
+    output_root: Path | None = None,
 ) -> dict:
-    registry_path = DESIGN_ROOT / "experiment_registry.tsv"
+    resolved_design, resolved_output = versioned_roots(final_acceptance)
+    design_root = design_root or resolved_design
+    output_root = output_root or resolved_output
+    registry_path = design_root / "experiment_registry.tsv"
     if registry_path.exists():
         if not resume_completed:
             raise FileExistsError(f"Refusing existing MC stability design: {registry_path}")
-        registry, rows = existing_design(production_registry, final_acceptance)
+        registry, rows = existing_design(
+            production_registry, final_acceptance, design_root, output_root
+        )
     else:
-        registry, rows = write_design(production_registry, final_acceptance)
+        registry, rows = write_design(
+            production_registry, final_acceptance,
+            design_root=design_root, output_root=output_root,
+        )
     run_design(registry, rows, resume_completed=resume_completed)
     manifest = materialize_analysis_manifest(registry)
-    evidence_dir = OUTPUT_ROOT / "evidence"
+    evidence_dir = output_root / "evidence"
     if evidence_dir.exists():
         if not resume_completed:
             raise FileExistsError(f"Refusing existing MC evidence: {evidence_dir}")
