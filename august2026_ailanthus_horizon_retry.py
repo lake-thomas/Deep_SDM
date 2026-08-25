@@ -26,6 +26,7 @@ from august2026_production_train import (
 
 DATE_TAG = "20260825"
 HORIZON_EPOCHS = 15
+HORIZON_DESIGN_VERSION = 2
 
 
 def _history(path: Path) -> list[dict[str, str]]:
@@ -48,14 +49,24 @@ def validate_horizon_evidence(selection: dict, failed_summary_path: Path) -> dic
     registry = Path(failed["registry"])
     if sha256(registry) != failed["registry_sha256"]:
         raise ValueError("Failed long-horizon registry changed")
+    with training_metrics.open(newline="", encoding="utf-8") as handle:
+        metric_rows = list(csv.DictReader(handle))
+    if len(metric_rows) != 1:
+        raise ValueError("Failed long-horizon metrics must contain one fit")
     with registry.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
     if len(rows) != 1:
         raise ValueError("Failed long-horizon registry must contain one fit")
     long_config = Path(rows[0]["config_path"])
     long_run = Path(rows[0]["run_dir"])
+    long_checkpoint = long_run / "checkpoints" / "best.pt"
     if not long_config.is_file() or not long_run.is_dir():
         raise FileNotFoundError("Failed long-horizon config or run is missing")
+    if (
+        not long_checkpoint.is_file()
+        or sha256(long_checkpoint) != metric_rows[0]["best_checkpoint_sha256"]
+    ):
+        raise ValueError("Failed long-horizon checkpoint identity changed")
     long_payload = read_json(long_config)
     if (
         long_payload.get("selection_gate", {}).get("selection_manifest_sha256")
@@ -81,7 +92,7 @@ def validate_horizon_evidence(selection: dict, failed_summary_path: Path) -> dic
         "failed_acceptance_summary_sha256": sha256(failed_summary_path),
         "failed_long_config": str(long_config.resolve()),
         "failed_long_config_sha256": sha256(long_config),
-        "failed_long_checkpoint_sha256": rows[0].get("best_checkpoint_sha256"),
+        "failed_long_checkpoint_sha256": metric_rows[0]["best_checkpoint_sha256"],
         "screen_history": str(screen_history_path.resolve()),
         "screen_history_sha256": sha256(screen_history_path),
         "failed_long_history": str(long_history_path.resolve()),
@@ -107,7 +118,7 @@ def retry_name(selection: dict) -> str:
         f"posw_{rad}_moddrop{int(round(probability * 100)):02d}_"
         f"d{int(round(selection['dropout'] * 100)):03d}_"
         f"s{int(round(selection['label_smoothing'] * 100)):03d}_"
-        f"h{HORIZON_EPOCHS:03d}_{calibration}_{DATE_TAG}"
+        f"h{HORIZON_EPOCHS:03d}v{HORIZON_DESIGN_VERSION}_{calibration}_{DATE_TAG}"
     )
 
 
@@ -139,7 +150,10 @@ def write_design(
     ).stdout.strip():
         raise RuntimeError("Refusing to freeze horizon retry from a dirty tree")
 
-    label = f"production_ailanthus_retry_h015_{selection_hash[:10]}_{DATE_TAG}"
+    label = (
+        f"production_ailanthus_retry_h015v{HORIZON_DESIGN_VERSION}_"
+        f"{selection_hash[:10]}_{DATE_TAG}"
+    )
     stage_root = PRODUCTION_OUTPUT_ROOT / label
     design_root = DESIGN_BASE / label
     config = build_config(source, selection, stage_root, selection_manifest, selection_hash)
@@ -187,6 +201,7 @@ def write_design(
         "status": "complete",
         "date_tag": DATE_TAG,
         "stage": "ailanthus-fixed-horizon-production-retry",
+        "design_version": HORIZON_DESIGN_VERSION,
         "code_root": str(code_root),
         "code_commit": commit,
         "code_dirty": False,

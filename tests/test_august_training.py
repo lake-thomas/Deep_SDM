@@ -67,6 +67,7 @@ from august2026_ailanthus_production_train import (
     replacement_name as replacement_production_name,
 )
 from august2026_ailanthus_horizon_retry import (
+    HORIZON_DESIGN_VERSION,
     HORIZON_EPOCHS,
     retry_name as ailanthus_horizon_retry_name,
 )
@@ -673,7 +674,9 @@ class AugustExperimentDesignTests(unittest.TestCase):
             "production_postfit_calibration": "none",
         }
         name = ailanthus_horizon_retry_name(selection)
-        self.assertIn(f"_h{HORIZON_EPOCHS:03d}_", name)
+        self.assertIn(
+            f"_h{HORIZON_EPOCHS:03d}v{HORIZON_DESIGN_VERSION}_", name
+        )
         self.assertIn("_moddrop25_", name)
         self.assertTrue(name.startswith("production_retry_ailanthus_altissima_"))
 
