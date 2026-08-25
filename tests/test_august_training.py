@@ -78,6 +78,7 @@ from august2026_mc_stability_screen import (
 )
 from august2026_combine_dataset_screen_evidence import HOSTS, combine_evidence
 from august2026_inference_output_qa import validate_triplet
+from august2026_compact_inference_shard import compact_shard
 from august2026_prepare_mosaic_inputs import prepare_inputs
 from august2026_calibrate_radiometric_augmentation import derive_recipe
 from august2026_freeze_dataset_selection import freeze_selection
@@ -1009,6 +1010,65 @@ class AugustExperimentDesignTests(unittest.TestCase):
             )
             self.assertTrue(result["passed"], result["failures"])
             self.assertFalse(result["has_sampled_valid_support"])
+
+    def test_inference_shard_compaction_preserves_geometry_tags_masks_and_error_bound(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "tiles.txt"
+            manifest.write_text(
+                f"{root / 'tile_a.tif'}\n{root / 'tile_b.tif'}\n",
+                encoding="utf-8",
+            )
+            source_dir = root / "native"
+            source_dir.mkdir()
+            transform = rasterio.transform.from_origin(0, 64, 1, 1)
+            rng = np.random.default_rng(42)
+            for stem in ("tile_a", "tile_b"):
+                probability = rng.random((64, 64), dtype=np.float32)
+                probability[:4, :4] = -9999.0
+                uncertainty = rng.random((64, 64), dtype=np.float32) * 0.2
+                uncertainty[:4, :4] = -9999.0
+                count = np.full((64, 64), 4, dtype=np.uint16)
+                count[:4, :4] = 0
+                tags = {
+                    "blend_window": "hann",
+                    "blend_edge_floor": "0.05",
+                    "score_space": "raw_sigmoid_probability",
+                }
+                for suffix, dtype, nodata, values in (
+                    ("prediction", "float32", -9999.0, probability),
+                    ("uncertainty", "float32", -9999.0, uncertainty),
+                    ("count", "uint16", 0, count),
+                ):
+                    path = source_dir / f"{stem}_{suffix}.tif"
+                    profile = {
+                        "driver": "GTiff", "width": 64, "height": 64,
+                        "count": 1, "dtype": dtype, "crs": "EPSG:5070",
+                        "transform": transform, "nodata": nodata,
+                        "compress": "deflate",
+                    }
+                    with rasterio.open(path, "w", **profile) as target:
+                        target.write(values, 1)
+                        target.set_band_description(1, suffix)
+                        target.update_tags(**tags)
+            output_dir = root / "compact"
+            payload = compact_shard(
+                manifest, source_dir, output_dir,
+                max_z_error=1e-5, workers=2,
+            )
+            self.assertEqual(payload["status"], "complete")
+            self.assertEqual(payload["expected_tile_count"], 2)
+            self.assertEqual(payload["output_raster_count"], 6)
+            self.assertTrue(payload["all_outputs_passed"])
+            detail = pd.read_csv(payload["detail"])
+            self.assertTrue(detail["passed"].all())
+            floats = detail[detail["suffix"].isin(["prediction", "uncertainty"])]
+            self.assertTrue((floats["compression"] == "LERC_ZSTD").all())
+            self.assertLessEqual(floats["measured_max_abs_error"].max(), 1.005e-5)
+            counts = detail[detail["suffix"] == "count"]
+            self.assertTrue((counts["source_sha256"] == counts["compact_sha256"]).all())
+            self.assertTrue((output_dir / "summary.json").is_file())
+            self.assertTrue((output_dir / "COMPLETED").is_file())
 
     def test_aligned_raster_correlation_streams_exact_pearson(self):
         with tempfile.TemporaryDirectory() as temp_dir:

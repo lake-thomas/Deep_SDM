@@ -21,6 +21,7 @@ TOP_LEVEL_SUPPORT = [
     # module name. Keep a root-level copy as well as the inference-runtime copy
     # under code_snapshot/ so the frozen bundle is self-contained.
     "august2026_inference_provenance.py", "august2026_inference_output_qa.py",
+    "august2026_compact_inference_shard.py",
     "august2026_native_mosaic_parity.py",
     "august2026_prepare_mosaic_inputs.py", "august2026_render_fixed_quickviews.py",
     "august2026_record_visual_review.py", "august2026_release_evidence.py",
