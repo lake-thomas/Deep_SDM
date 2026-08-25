@@ -68,6 +68,13 @@ from dgx_august2026.validate_dgx_bundle import (
     validate_inference_qa as validate_dgx_inference_qa,
 )
 from dgx_august2026.project_full_runtime import synthesize_projection
+from dgx_august2026.run_compacted_shard_group import (
+    EAST_HOSTS,
+    inference_command,
+    schedule_groups,
+    validate_staging_root,
+)
+from dgx_august2026.run_compacted_queue import selected_shards
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -375,6 +382,11 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
             self.assertEqual(output.parent, root / "inference")
             self.assertIn(sha256(acceptance)[:10], output.name)
             self.assertTrue(output.name.endswith("_20260825"))
+            code_versioned = versioned_inference_root(
+                acceptance, root / "inference", code_commit="abcdef1234567890"
+            )
+            self.assertIn("abcdef1234", code_versioned.name)
+            self.assertNotEqual(output, code_versioned)
 
     def test_mc_roots_are_versioned_by_final_acceptance(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -979,6 +991,61 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("OUTPUT_ROOT differs from the frozen bundle root", text)
         self.assertNotIn("sbatch", text)
         self.assertNotIn("SLURM_", text)
+
+    def test_compacted_dgx_schedule_freezes_eastern_hosts_and_tanoak_products(self):
+        eastern = schedule_groups("east_of_mississippi", EAST_HOSTS, 10)
+        self.assertEqual(len(eastern), 2)
+        self.assertEqual({task[1] for task in eastern[0]}, {"deterministic"})
+        self.assertEqual({task[1] for task in eastern[1]}, {"uncertainty"})
+        self.assertEqual({task[2] for task in eastern[1]}, {10})
+        tanoak = schedule_groups(
+            "tanoak_ca_or", ("notholithocarpus_densiflorus",), 10
+        )
+        self.assertEqual(
+            {(task[1], task[2]) for task in tanoak[0]},
+            {("deterministic", 1), ("uncertainty", 10)},
+        )
+        with self.assertRaises(ValueError):
+            schedule_groups("east_of_mississippi", tuple(reversed(EAST_HOSTS)), 10)
+
+    def test_compacted_dgx_staging_is_scoped_and_command_preserves_frozen_recipe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            staging = root / "local" / "staging"
+            shard = staging / "bundle" / "east" / "shard_00000"
+            durable = root / "durable" / "accepted"
+            validate_staging_root(staging, shard, durable)
+            with self.assertRaises(ValueError):
+                validate_staging_root(Path("/"), shard, durable)
+            command = inference_command(
+                Path("/env/python"), root / "bundle", root / "project",
+                {
+                    "config": root / "config.json",
+                    "checkpoint": root / "best.pt",
+                    "calibrator": None,
+                },
+                root / "tiles.txt", root / "native", 10, 42, 128,
+            )
+            joined = " ".join(command)
+            self.assertIn("--mc-samples 10", joined)
+            self.assertIn("--batch-size 128", joined)
+            self.assertIn("--blend-window hann", joined)
+            self.assertIn("--blend-edge-floor 0.05", joined)
+            self.assertIn("--skip-existing", joined)
+
+    def test_compacted_queue_requires_explicit_full_manifest_authorization(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index in range(3):
+                (root / f"shard_{index:05d}.txt").write_text(
+                    f"/archive/tile_{index}.tif\n", encoding="utf-8"
+                )
+            bounded = selected_shards(root, 1, 2, False)
+            self.assertEqual([item[0] for item in bounded], ["00001", "00002"])
+            with self.assertRaises(PermissionError):
+                selected_shards(root, 0, None, False)
+            complete = selected_shards(root, 0, None, True)
+            self.assertEqual(len(complete), 3)
 
     def test_dgx_qa_gate_includes_seed_mc_count_and_output_root(self):
         with tempfile.TemporaryDirectory() as temp_dir:

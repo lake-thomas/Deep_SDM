@@ -29,7 +29,9 @@ TOP_LEVEL_SUPPORT = [
 ]
 DGX_SUPPORT = [
     "prepare_inference_design.sh", "project_full_runtime.py", "run_inference_queue.sh",
-    "run_inference_shard.sh", "run_mosaic_host.sh", "validate_dgx_bundle.py",
+    "run_inference_shard.sh", "run_compacted_shard_group.py",
+    "run_compacted_queue.py",
+    "run_mosaic_host.sh", "validate_dgx_bundle.py",
 ]
 GENERIC_SUPPORT = ["build_archive_manifests.py", "make_tile_shards.py", "resolve_production_candidate.py"]
 INFERENCE_DATE_TAG = "20260825"
@@ -42,11 +44,13 @@ INFERENCE_OUTPUT_BASE = Path(
 def versioned_inference_root(
     acceptance_summary: Path,
     output_base: Path = INFERENCE_OUTPUT_BASE,
+    code_commit: str | None = None,
 ) -> Path:
-    """Return the unique tiled-output root for one accepted model package."""
+    """Return the unique tiled-output root for one accepted model/code package."""
+    code_tag = f"_{code_commit[:10]}" if code_commit else ""
     return (
         output_base
-        / f"accepted_{sha256(acceptance_summary)[:10]}_{INFERENCE_DATE_TAG}"
+        / f"accepted_{sha256(acceptance_summary)[:10]}{code_tag}_{INFERENCE_DATE_TAG}"
     )
 
 
@@ -157,7 +161,9 @@ def prepare_bundle(registry: Path, acceptance_summary: Path, mc_stability_summar
     write_json_atomic(review_template_path, visual_review_template())
     hashes[review_template_path.name] = sha256(review_template_path)
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=code_root, check=True, capture_output=True, text=True).stdout.strip()
-    inference_root = versioned_inference_root(acceptance_summary)
+    inference_root = versioned_inference_root(
+        acceptance_summary, code_commit=commit
+    )
     payload = {
         "status": "complete", "bundle_type": "accepted_august2026_dgx_hann_inference",
         "code_commit": commit, "source_registry": str(registry.resolve()),
@@ -172,11 +178,23 @@ def prepare_bundle(registry: Path, acceptance_summary: Path, mc_stability_summar
             "blend_edge_floor": 0.05, "base_seed": 42,
             "deterministic_mc_samples": 1, "uncertainty_mc_samples": recommended,
             "calibration": "candidate-specific configured release score space",
+            "batch_size": 128,
+            "execution_strategy": {
+                "east_of_mississippi": "four hosts concurrent within each product",
+                "tanoak_ca_or": "deterministic and uncertainty concurrent",
+            },
+            "storage_compaction": {
+                "enabled": True,
+                "float_compression": "LERC_ZSTD",
+                "max_z_error": 1e-5,
+                "source_retention": "retain until compact copy and QA both pass",
+            },
             "active_tiled_output_root": str(inference_root),
         },
         "guardrail": (
-            "Run two-tile smoke shards and structural/tag QA before the full queue. "
-            "Use the local DGX only; this bundle does not authorize Hazel submission."
+            "Run two-tile smoke and 250-tile concurrent/compaction trials before the full "
+            "queue. Use the local DGX only; this bundle does not authorize Hazel submission "
+            "or removal of uncompacted source outputs."
         ),
     }
     write_json_atomic(output_dir / "bundle_metadata.json", payload)
