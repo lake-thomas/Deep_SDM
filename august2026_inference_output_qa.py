@@ -109,9 +109,10 @@ def validate_triplet(
             failures.append("prediction_count_mask")
         prediction_values = np.asarray(prediction_sample.compressed(), dtype=float)
         uncertainty_values = np.asarray(uncertainty_sample.compressed(), dtype=float)
-        if not len(prediction_values):
-            failures.append("no_sampled_valid_predictions")
-        elif prediction_values.min() < 0 or prediction_values.max() > 1:
+        has_sampled_valid_support = bool(len(prediction_values))
+        if has_sampled_valid_support and (
+            prediction_values.min() < 0 or prediction_values.max() > 1
+        ):
             failures.append("prediction_range")
         if len(uncertainty_values):
             if uncertainty_values.min() < 0 or uncertainty_values.max() > 0.5 + 1e-6:
@@ -127,6 +128,7 @@ def validate_triplet(
         "count": str(count_path),
         "passed": not failures,
         "failures": ";".join(failures),
+        "has_sampled_valid_support": has_sampled_valid_support,
         "sampled_prediction_min": (
             float(prediction_values.min()) if len(prediction_values) else None
         ),
@@ -216,6 +218,13 @@ def main() -> None:
         failed_tiles = [row for row in rows if not row["passed"]]
         if failed_tiles:
             failures.append(f"failed_tile_triplets={len(failed_tiles)}")
+        sampled_valid_support_count = sum(
+            bool(row["has_sampled_valid_support"]) for row in rows
+        )
+        if not sampled_valid_support_count:
+            failures.append("no_tiles_with_sampled_valid_support")
+    else:
+        sampled_valid_support_count = 0
     args.output_dir.mkdir(parents=True)
     detail_path = args.output_dir / "tile_output_qa.csv"
     write_csv_atomic(detail_path, pd.DataFrame(rows))
@@ -231,6 +240,8 @@ def main() -> None:
         "prediction_count": len(indices["prediction"]),
         "uncertainty_count": len(indices["uncertainty"]),
         "count_raster_count": len(indices["count"]),
+        "sampled_valid_support_count": sampled_valid_support_count,
+        "sampled_empty_support_count": len(rows) - sampled_valid_support_count,
         "expected_score_space": args.expected_score_space,
         "expected_calibrator_sha256": args.expected_calibrator_sha256,
         "base_seed": args.base_seed,
@@ -242,7 +253,10 @@ def main() -> None:
         "tile_output_qa_sha256": sha256(detail_path),
         "sampling_note": (
             "All triplets receive metadata/tag/geometry checks. Raster values and "
-            "valid masks are checked on a 64x64 nearest-neighbor grid per tile."
+            "valid masks are checked on a 64x64 nearest-neighbor grid per tile. "
+            "An internally consistent all-nodata prediction/uncertainty and zero-count "
+            "triplet is retained as empty support (for example, coastal or all-water "
+            "tiles); at least one tile in the QA set must have sampled valid support."
         ),
     }
     write_json_atomic(args.output_dir / "summary.json", payload)

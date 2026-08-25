@@ -961,6 +961,54 @@ class AugustExperimentDesignTests(unittest.TestCase):
                 1,
             )
             self.assertTrue(result["passed"], result["failures"])
+            self.assertTrue(result["has_sampled_valid_support"])
+
+    def test_inference_output_qa_accepts_consistent_empty_support_triplet(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            profile = {
+                "driver": "GTiff",
+                "width": 8,
+                "height": 8,
+                "count": 1,
+                "dtype": "uint8",
+                "crs": "EPSG:5070",
+                "transform": rasterio.transform.from_origin(0, 8, 1, 1),
+                "nodata": 0,
+            }
+            input_path = root / "tile.tif"
+            with rasterio.open(input_path, "w", **profile) as target:
+                target.write(np.ones((8, 8), dtype=np.uint8), 1)
+            tags = {
+                "blend_window": "hann",
+                "blend_edge_floor": "0.05",
+                "score_space": "raw_sigmoid_probability",
+                "inference_seed": "123",
+                "mc_samples": "1",
+            }
+            for suffix, dtype, nodata, values in (
+                ("prediction", "float32", -9999.0, np.full((8, 8), -9999.0, np.float32)),
+                ("uncertainty", "float32", -9999.0, np.full((8, 8), -9999.0, np.float32)),
+                ("count", "uint16", 0, np.zeros((8, 8), np.uint16)),
+            ):
+                path = root / f"tile_{suffix}.tif"
+                output_profile = {**profile, "dtype": dtype, "nodata": nodata}
+                with rasterio.open(path, "w", **output_profile) as target:
+                    target.write(values, 1)
+                    target.update_tags(**tags)
+            result = validate_triplet(
+                input_path,
+                root / "tile_prediction.tif",
+                root / "tile_uncertainty.tif",
+                root / "tile_count.tif",
+                "raw_sigmoid_probability",
+                None,
+                "deterministic",
+                123,
+                1,
+            )
+            self.assertTrue(result["passed"], result["failures"])
+            self.assertFalse(result["has_sampled_valid_support"])
 
     def test_aligned_raster_correlation_streams_exact_pearson(self):
         with tempfile.TemporaryDirectory() as temp_dir:
