@@ -226,7 +226,7 @@ def main() -> None:
     )
     print(f"Wrote predeclared Ailanthus horizon retry: {registry}")
     if args.run:
-        run_experiments(registry, rows)
+        run_experiments(registry, rows, max_runs=None)
 
 
 if __name__ == "__main__":
