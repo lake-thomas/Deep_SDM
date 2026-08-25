@@ -55,6 +55,7 @@ from august2026_prepare_dgx_inference_bundle import (
     visual_review_template,
 )
 from august2026_release_evidence import (
+    _index_compacted_dgx_queue_chain,
     _index_dgx_run_chain,
     assemble_release_evidence,
 )
@@ -967,6 +968,151 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                 status_paths, registry, bundle, inference_by_key, {}, rows, failures
             )
             self.assertTrue(any(item.startswith("dgx_run_output_counts:") for item in failures))
+
+    def test_compacted_dgx_queue_chain_requires_global_qa_and_clean_staging(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            registry = root / "registry.tsv"
+            registry.write_text("host\nailanthus_altissima\n", encoding="utf-8")
+            active_root = root / "durable" / "accepted"
+            bundle = root / "bundle_metadata.json"
+            write_json(
+                bundle,
+                {
+                    "status": "complete",
+                    "inference_defaults": {
+                        "active_tiled_output_root": str(active_root),
+                        "storage_compaction": {
+                            "enabled": True,
+                            "float_compression": "LERC_ZSTD",
+                            "max_z_error": 1e-5,
+                        },
+                    },
+                },
+            )
+            regions = {
+                "east_of_mississippi": sorted(
+                    HOSTS - {"notholithocarpus_densiflorus"}
+                ),
+                "tanoak_ca_or": ["notholithocarpus_densiflorus"],
+            }
+            inference_by_key = {}
+            queue_paths = []
+            for region, hosts in regions.items():
+                design_root = root / "design" / region
+                shard_dir = design_root / "shards"
+                shard_dir.mkdir(parents=True)
+                manifest = design_root / "all_tiles.txt"
+                manifest.write_text(f"/archive/{region}.tif\n", encoding="utf-8")
+                tile_list = shard_dir / "shard_00000.txt"
+                tile_list.write_text(manifest.read_text(encoding="utf-8"), encoding="utf-8")
+                write_json(
+                    shard_dir / "shard_metadata.json",
+                    {
+                        "status": "complete",
+                        "source_manifest": str(manifest),
+                        "source_manifest_sha256": sha256(manifest),
+                        "shard_count": 1,
+                    },
+                )
+                shard_metadata_hash = sha256(shard_dir / "shard_metadata.json")
+                shard_evidence = root / "evidence" / region / "shard_00000"
+                shard_design = shard_evidence / "design.json"
+                write_json(
+                    shard_design,
+                    {
+                        "status": "frozen", "region": region,
+                        "shard_id": "00000", "hosts": hosts,
+                        "bundle_metadata_sha256": sha256(bundle),
+                        "tile_list": str(tile_list),
+                        "tile_list_sha256": sha256(tile_list),
+                    },
+                )
+                compactions_path = shard_evidence / "compactions.json"
+                compaction = {
+                    "status": "complete",
+                    "stage": "native-inference-shard-storage-compaction",
+                    "all_outputs_passed": True,
+                    "float_compression": "LERC_ZSTD",
+                    "max_z_error": 1e-5,
+                    "tile_manifest_sha256": sha256(tile_list),
+                    "expected_tile_count": 1,
+                }
+                write_json(compactions_path, [compaction] * (len(hosts) * 2))
+                shard_summary = {
+                    "status": "complete", "region": region,
+                    "shard_id": "00000", "tile_count": 1,
+                    "all_compact_qa_passed": True,
+                    "staging_cleaned": True,
+                    "compaction_count": len(hosts) * 2,
+                    "compact_qa_count": len(hosts) * 2,
+                    "source_bytes": 200, "compact_bytes": 100,
+                    "design": str(shard_design),
+                    "design_sha256": sha256(shard_design),
+                    "compactions": str(compactions_path),
+                    "compactions_sha256": sha256(compactions_path),
+                }
+                details = root / "evidence" / region / "shard_summaries.json"
+                write_json(details, [shard_summary])
+                queue_design = root / "evidence" / region / "design.json"
+                write_json(
+                    queue_design,
+                    {
+                        "status": "frozen", "region": region,
+                        "shard_dir": str(shard_dir),
+                        "shard_metadata_sha256": shard_metadata_hash,
+                        "source_manifest_sha256": sha256(manifest),
+                        "selected_shards": ["00000"], "hosts": hosts,
+                        "bundle_metadata_sha256": sha256(bundle),
+                        "registry_sha256": sha256(registry),
+                        "cleanup_staging": True,
+                        "full_manifest_authorized": True,
+                    },
+                )
+                queue_summary = root / "evidence" / region / "summary.json"
+                write_json(
+                    queue_summary,
+                    {
+                        "status": "complete",
+                        "stage": "local-dgx-compacted-inference-queue",
+                        "region": region, "complete_manifest": True,
+                        "selected_shard_count": 1, "tile_count": 1,
+                        "all_compact_qa_passed": True,
+                        "all_global_qa_passed": True,
+                        "all_staging_cleaned": True,
+                        "global_qa_count": len(hosts) * 2,
+                        "design": str(queue_design),
+                        "design_sha256": sha256(queue_design),
+                        "shard_summaries": str(details),
+                        "shard_summaries_sha256": sha256(details),
+                    },
+                )
+                (queue_summary.parent / "COMPLETED").write_text(
+                    "complete\n", encoding="utf-8"
+                )
+                queue_paths.append(queue_summary)
+                for host in hosts:
+                    for product in ("deterministic", "uncertainty"):
+                        inference_by_key[(host, product)] = {
+                            "region": region,
+                            "expected_tile_count": 1,
+                            "output_root": str(active_root / region / host / product),
+                        }
+            rows, failures = [], []
+            _index_compacted_dgx_queue_chain(
+                queue_paths, registry, bundle, inference_by_key, rows, failures
+            )
+            self.assertEqual(failures, [])
+            broken = read_json(queue_paths[0])
+            broken["all_staging_cleaned"] = False
+            write_json(queue_paths[0], broken)
+            rows, failures = [], []
+            _index_compacted_dgx_queue_chain(
+                queue_paths, registry, bundle, inference_by_key, rows, failures
+            )
+            self.assertIn(
+                "compacted_dgx_queue_not_ready:east_of_mississippi", failures
+            )
 
     def test_dgx_shard_runner_is_local_seeded_hann_and_resumable(self):
         script = Path(__file__).resolve().parents[1] / "dgx_august2026" / "run_inference_shard.sh"

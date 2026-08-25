@@ -586,6 +586,188 @@ def _index_dgx_run_chain(
             failures.append(f"dgx_run_expected_count:{key}")
 
 
+def _index_compacted_dgx_queue_chain(
+    queue_summary_paths: list[Path],
+    production_registry_path: Path,
+    bundle_metadata_path: Path,
+    inference_by_key: dict,
+    rows: list[dict],
+    failures: list[str],
+) -> None:
+    """Verify complete compacted DGX queues and their per-shard evidence."""
+    expected_regions = {
+        "east_of_mississippi": HOSTS - {"notholithocarpus_densiflorus"},
+        "tanoak_ca_or": {"notholithocarpus_densiflorus"},
+    }
+    registry_hash = sha256(production_registry_path)
+    bundle_hash = sha256(bundle_metadata_path)
+    bundle = read_json(bundle_metadata_path)
+    defaults = bundle.get("inference_defaults") or {}
+    active_root = Path(defaults.get("active_tiled_output_root", "")).resolve()
+    storage = defaults.get("storage_compaction") or {}
+    if (
+        storage.get("enabled") is not True
+        or storage.get("float_compression") != "LERC_ZSTD"
+        or float(storage.get("max_z_error", -1)) != 1e-5
+    ):
+        failures.append("compacted_dgx_bundle_storage_defaults")
+    observed_regions = set()
+    for summary_path in queue_summary_paths:
+        if not _verified_index(
+            rows, failures, "compacted_dgx_queue_summary", summary_path,
+            failure_label=f"compacted_dgx_queue_summary:{summary_path.name}",
+        ):
+            continue
+        if not summary_path.with_name("COMPLETED").is_file():
+            failures.append(f"compacted_dgx_queue_marker:{summary_path}")
+        summary = read_json(summary_path)
+        region = summary.get("region")
+        if region in observed_regions:
+            failures.append(f"duplicate_compacted_dgx_queue:{region}")
+        observed_regions.add(region)
+        hosts = expected_regions.get(region)
+        if hosts is None:
+            failures.append(f"compacted_dgx_queue_region:{region}")
+            continue
+        if (
+            summary.get("status") != "complete"
+            or summary.get("stage") != "local-dgx-compacted-inference-queue"
+            or summary.get("complete_manifest") is not True
+            or summary.get("all_compact_qa_passed") is not True
+            or summary.get("all_global_qa_passed") is not True
+            or summary.get("all_staging_cleaned") is not True
+            or int(summary.get("global_qa_count", -1)) != len(hosts) * 2
+        ):
+            failures.append(f"compacted_dgx_queue_not_ready:{region}")
+        design_path = _payload_pointer(
+            rows, failures, summary, summary_path, "design",
+            "compacted_dgx_queue_design", region=region,
+        )
+        details_path = _payload_pointer(
+            rows, failures, summary, summary_path, "shard_summaries",
+            "compacted_dgx_shard_summaries", region=region,
+        )
+        if design_path is None or details_path is None:
+            continue
+        design = read_json(design_path)
+        selected = design.get("selected_shards") or []
+        if (
+            design.get("status") != "frozen"
+            or design.get("region") != region
+            or design.get("bundle_metadata_sha256") != bundle_hash
+            or design.get("registry_sha256") != registry_hash
+            or set(design.get("hosts") or []) != hosts
+            or design.get("cleanup_staging") is not True
+            or design.get("full_manifest_authorized") is not True
+            or len(selected) != int(summary.get("selected_shard_count", -1))
+        ):
+            failures.append(f"compacted_dgx_queue_design_identity:{region}")
+        shard_dir = Path(str(design.get("shard_dir", "")))
+        shard_metadata_path = shard_dir / "shard_metadata.json"
+        if not _verified_index(
+            rows, failures, "compacted_dgx_shard_metadata", shard_metadata_path,
+            expected_sha256=design.get("shard_metadata_sha256"),
+            failure_label=f"compacted_dgx_shard_metadata:{region}", region=region,
+        ):
+            continue
+        shard_metadata = read_json(shard_metadata_path)
+        source_manifest = Path(str(shard_metadata.get("source_manifest", "")))
+        if not _verified_index(
+            rows, failures, "compacted_dgx_source_manifest", source_manifest,
+            expected_sha256=design.get("source_manifest_sha256"),
+            failure_label=f"compacted_dgx_source_manifest:{region}", region=region,
+        ):
+            continue
+        if (
+            shard_metadata.get("status") != "complete"
+            or int(shard_metadata.get("shard_count", -1)) != len(selected)
+            or selected != [f"{index:05d}" for index in range(len(selected))]
+        ):
+            failures.append(f"compacted_dgx_shard_coverage:{region}")
+        shard_summaries = read_json(details_path)
+        if not isinstance(shard_summaries, list) or len(shard_summaries) != len(selected):
+            failures.append(f"compacted_dgx_shard_summary_count:{region}")
+            continue
+        observed_shards = set()
+        summed_tiles = 0
+        for shard in shard_summaries:
+            shard_id = str(shard.get("shard_id", ""))
+            if shard_id in observed_shards:
+                failures.append(f"duplicate_compacted_dgx_shard:{region}:{shard_id}")
+            observed_shards.add(shard_id)
+            if (
+                shard.get("status") != "complete"
+                or shard.get("region") != region
+                or shard.get("all_compact_qa_passed") is not True
+                or shard.get("staging_cleaned") is not True
+                or int(shard.get("compaction_count", -1)) != len(hosts) * 2
+                or int(shard.get("compact_qa_count", -1)) != len(hosts) * 2
+                or int(shard.get("source_bytes", 0)) <= int(shard.get("compact_bytes", -1))
+            ):
+                failures.append(f"compacted_dgx_shard_not_ready:{region}:{shard_id}")
+            summed_tiles += int(shard.get("tile_count", 0))
+            shard_design_path = _payload_pointer(
+                rows, failures, shard, details_path, "design",
+                "compacted_dgx_shard_design", region=region,
+            )
+            compactions_path = _payload_pointer(
+                rows, failures, shard, details_path, "compactions",
+                "compacted_dgx_compactions", region=region,
+            )
+            if shard_design_path is None or compactions_path is None:
+                continue
+            shard_design = read_json(shard_design_path)
+            tile_list = Path(str(shard_design.get("tile_list", "")))
+            if (
+                shard_design.get("status") != "frozen"
+                or shard_design.get("region") != region
+                or shard_design.get("shard_id") != shard_id
+                or shard_design.get("bundle_metadata_sha256") != bundle_hash
+                or set(shard_design.get("hosts") or []) != hosts
+                or not tile_list.is_file()
+                or shard_design.get("tile_list_sha256") != sha256(tile_list)
+            ):
+                failures.append(f"compacted_dgx_shard_design_identity:{region}:{shard_id}")
+            compactions = read_json(compactions_path)
+            if not isinstance(compactions, list) or len(compactions) != len(hosts) * 2:
+                failures.append(f"compacted_dgx_compaction_count:{region}:{shard_id}")
+                continue
+            for compaction in compactions:
+                if (
+                    compaction.get("status") != "complete"
+                    or compaction.get("stage") != "native-inference-shard-storage-compaction"
+                    or compaction.get("all_outputs_passed") is not True
+                    or compaction.get("float_compression") != "LERC_ZSTD"
+                    or float(compaction.get("max_z_error", -1)) != 1e-5
+                    or compaction.get("tile_manifest_sha256")
+                    != shard_design.get("tile_list_sha256")
+                    or int(compaction.get("expected_tile_count", -1))
+                    != int(shard.get("tile_count", -2))
+                ):
+                    failures.append(f"compacted_dgx_compaction_identity:{region}:{shard_id}")
+        if observed_shards != set(selected) or summed_tiles != int(summary.get("tile_count", -1)):
+            failures.append(f"compacted_dgx_queue_tile_coverage:{region}")
+        expected_tile_count = len([
+            line for line in source_manifest.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ])
+        if summed_tiles != expected_tile_count:
+            failures.append(f"compacted_dgx_source_tile_count:{region}")
+        for host in hosts:
+            for product in PRODUCTS:
+                evidence = inference_by_key.get((host, product)) or {}
+                expected_output = active_root / region / host / product
+                if (
+                    evidence.get("region") != region
+                    or evidence.get("expected_tile_count") != expected_tile_count
+                    or Path(str(evidence.get("output_root", ""))).resolve()
+                    != expected_output.resolve()
+                ):
+                    failures.append(f"compacted_dgx_global_qa_identity:{host}:{product}")
+    if observed_regions != set(expected_regions):
+        failures.append("compacted_dgx_queue_region_set")
+
+
 def assemble_release_evidence(
     final_acceptance_path: Path,
     production_registry_path: Path,
@@ -600,6 +782,7 @@ def assemble_release_evidence(
     hann_results_path: Path,
     output_dir: Path,
     dgx_run_status_paths: list[Path] | None = None,
+    dgx_compacted_queue_summary_paths: list[Path] | None = None,
 ) -> dict:
     failures = []
     index_rows: list[dict] = []
@@ -863,11 +1046,20 @@ def assemble_release_evidence(
         failures.append("mosaic_qa_host_set")
 
     if is_dgx:
-        _index_dgx_run_chain(
-            dgx_run_status_paths or [], production_registry_path,
-            hazel_bundle_metadata_path, inference_by_key, inference_paths_by_key,
-            index_rows, failures,
-        )
+        if dgx_compacted_queue_summary_paths:
+            if dgx_run_status_paths:
+                failures.append("multiple_dgx_execution_evidence_modes")
+            _index_compacted_dgx_queue_chain(
+                dgx_compacted_queue_summary_paths, production_registry_path,
+                hazel_bundle_metadata_path, inference_by_key,
+                index_rows, failures,
+            )
+        else:
+            _index_dgx_run_chain(
+                dgx_run_status_paths or [], production_registry_path,
+                hazel_bundle_metadata_path, inference_by_key, inference_paths_by_key,
+                index_rows, failures,
+            )
     else:
         _index_hazel_submission_chain(
             hazel_submission_log_paths, production_registry_path,
@@ -1052,6 +1244,9 @@ def parse_args() -> argparse.Namespace:
     bundle.add_argument("--dgx-bundle-metadata", type=Path)
     parser.add_argument("--hazel-submission-log", type=Path, action="append", default=[])
     parser.add_argument("--dgx-run-status", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--dgx-compacted-queue-summary", type=Path, action="append", default=[]
+    )
     parser.add_argument("--candidate-provenance-summary", type=Path, action="append", required=True)
     parser.add_argument("--attrition-summary", type=Path, action="append", required=True)
     parser.add_argument("--inference-qa-summary", type=Path, action="append", required=True)
@@ -1068,16 +1263,24 @@ def main() -> None:
     bundle_metadata = args.dgx_bundle_metadata or args.hazel_bundle_metadata
     if args.dgx_bundle_metadata and args.hazel_submission_log:
         raise ValueError("DGX release evidence cannot use Hazel submission logs")
-    if args.hazel_bundle_metadata and args.dgx_run_status:
-        raise ValueError("Hazel release evidence cannot use DGX run statuses")
+    if args.hazel_bundle_metadata and (
+        args.dgx_run_status or args.dgx_compacted_queue_summary
+    ):
+        raise ValueError("Hazel release evidence cannot use DGX execution evidence")
     if args.hazel_bundle_metadata and not args.hazel_submission_log:
         raise ValueError("Hazel release evidence requires --hazel-submission-log")
-    if args.dgx_bundle_metadata and not args.dgx_run_status:
-        raise ValueError("DGX release evidence requires --dgx-run-status")
+    if args.dgx_bundle_metadata and bool(args.dgx_run_status) == bool(
+        args.dgx_compacted_queue_summary
+    ):
+        raise ValueError(
+            "DGX release evidence requires exactly one of --dgx-run-status or "
+            "--dgx-compacted-queue-summary"
+        )
     required = [
         args.final_acceptance, args.production_registry, bundle_metadata,
         *args.hazel_submission_log,
         *args.dgx_run_status,
+        *args.dgx_compacted_queue_summary,
         args.visual_review, args.aligned_correlation, args.hann_results,
         *args.candidate_provenance_summary, *args.attrition_summary,
         *args.inference_qa_summary, *args.mosaic_qa_summary,
@@ -1093,6 +1296,7 @@ def main() -> None:
         args.visual_review, args.aligned_correlation, args.hann_results,
         args.output_dir,
         dgx_run_status_paths=args.dgx_run_status,
+        dgx_compacted_queue_summary_paths=args.dgx_compacted_queue_summary,
     )
     print(json.dumps(payload, indent=2))
 
