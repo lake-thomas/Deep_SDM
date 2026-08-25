@@ -71,6 +71,7 @@ from dgx_august2026.project_full_runtime import synthesize_projection
 from dgx_august2026.run_compacted_shard_group import (
     EAST_HOSTS,
     inference_command,
+    run_output_qa,
     schedule_groups,
     validate_staging_root,
 )
@@ -1046,6 +1047,49 @@ class AugustReleaseEvidenceTests(unittest.TestCase):
                 selected_shards(root, 0, None, False)
             complete = selected_shards(root, 0, None, True)
             self.assertEqual(len(complete), 3)
+
+    def test_compacted_output_qa_reuse_requires_exact_identity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "tiles.txt"
+            manifest.write_text("/archive/tile.tif\n", encoding="utf-8")
+            output_root = root / "outputs"
+            output_root.mkdir()
+            qa_dir = root / "qa"
+            candidate = {
+                "score_space": "raw",
+                "calibrator_sha256": None,
+            }
+            write_json(
+                qa_dir / "summary.json",
+                {
+                    "status": "complete",
+                    "production_ready": True,
+                    "host": "ailanthus_altissima",
+                    "region": "east_of_mississippi",
+                    "product": "uncertainty",
+                    "tile_manifest_sha256": sha256(manifest),
+                    "expected_tile_count": 1,
+                    "expected_score_space": "raw",
+                    "expected_calibrator_sha256": None,
+                    "base_seed": 42,
+                    "expected_mc_samples": 10,
+                    "output_root": str(output_root.resolve()),
+                },
+            )
+            (qa_dir / "COMPLETED").write_text("complete\n", encoding="utf-8")
+            reused = run_output_qa(
+                Path("/unused/python"), root / "bundle", manifest,
+                output_root, qa_dir, "ailanthus_altissima",
+                "east_of_mississippi", "uncertainty", candidate, 42, 10,
+            )
+            self.assertTrue(reused["production_ready"])
+            with self.assertRaises(RuntimeError):
+                run_output_qa(
+                    Path("/unused/python"), root / "bundle", manifest,
+                    output_root, qa_dir, "ailanthus_altissima",
+                    "east_of_mississippi", "uncertainty", candidate, 42, 5,
+                )
 
     def test_dgx_qa_gate_includes_seed_mc_count_and_output_root(self):
         with tempfile.TemporaryDirectory() as temp_dir:

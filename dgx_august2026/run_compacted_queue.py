@@ -11,9 +11,13 @@ import time
 
 from august2026_summarize_experiments import sha256, write_json_atomic
 try:
-    from .run_compacted_shard_group import EAST_HOSTS, TANOAK_HOST
+    from .run_compacted_shard_group import (
+        EAST_HOSTS, TANOAK_HOST, read_registry, resolve_candidate, run_output_qa,
+    )
 except ImportError:  # Frozen bundle copies both entry points to one directory.
-    from run_compacted_shard_group import EAST_HOSTS, TANOAK_HOST
+    from run_compacted_shard_group import (
+        EAST_HOSTS, TANOAK_HOST, read_registry, resolve_candidate, run_output_qa,
+    )
 
 
 def selected_shards(
@@ -91,8 +95,23 @@ def execute(args: argparse.Namespace) -> dict:
         write_json_atomic(design_path, design)
     completed = queue_root / "COMPLETED"
     summary_path = queue_root / "summary.json"
+    complete_manifest = len(selected) == int(shard_metadata["shard_count"])
     if completed.is_file() and summary_path.is_file():
-        return json.loads(summary_path.read_text(encoding="utf-8"))
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        expected = {
+            "status": "complete", "region": args.region,
+            "selected_shard_count": len(selected),
+            "first_shard": selected[0][0], "last_shard": selected[-1][0],
+            "design_sha256": sha256(design_path), "all_compact_qa_passed": True,
+            "complete_manifest": complete_manifest,
+            "global_qa_count": len(hosts) * 2 if complete_manifest else 0,
+            "all_global_qa_passed": True if complete_manifest else None,
+        }
+        if args.cleanup_staging:
+            expected["all_staging_cleaned"] = True
+        if not all(payload.get(key) == value for key, value in expected.items()):
+            raise RuntimeError("Completed queue summary differs from frozen evidence")
+        return payload
 
     started = time.monotonic()
     summaries = []
@@ -132,6 +151,28 @@ def execute(args: argparse.Namespace) -> dict:
         write_json_atomic(queue_root / "progress.json", progress)
     detail = queue_root / "shard_summaries.json"
     write_json_atomic(detail, summaries)
+    global_qa = []
+    if complete_manifest:
+        registry = read_registry(args.registry)
+        candidates = {host: resolve_candidate(registry[host]) for host in hosts}
+        full_manifest = Path(shard_metadata["source_manifest"])
+        defaults = bundle_metadata["inference_defaults"]
+        for host in hosts:
+            for product, mc_samples in (
+                ("deterministic", int(defaults["deterministic_mc_samples"])),
+                ("uncertainty", int(defaults["uncertainty_mc_samples"])),
+            ):
+                qa_dir = (
+                    output_root / "_run_metadata/qa" / args.region / host
+                    / product / "final"
+                )
+                payload = run_output_qa(
+                    args.python_bin, args.bundle_root, full_manifest,
+                    output_root / args.region / host / product,
+                    qa_dir, host, args.region, product, candidates[host],
+                    int(defaults["base_seed"]), mc_samples,
+                )
+                global_qa.append(payload)
     summary = {
         "status": "complete", "stage": "local-dgx-compacted-inference-queue",
         "region": args.region, "selected_shard_count": len(selected),
@@ -141,6 +182,12 @@ def execute(args: argparse.Namespace) -> dict:
         "compact_bytes": sum(int(row["compact_bytes"]) for row in summaries),
         "elapsed_seconds": time.monotonic() - started,
         "all_compact_qa_passed": all(row["all_compact_qa_passed"] for row in summaries),
+        "complete_manifest": complete_manifest,
+        "global_qa_count": len(global_qa),
+        "all_global_qa_passed": (
+            all(row.get("production_ready") is True for row in global_qa)
+            if complete_manifest else None
+        ),
         "all_staging_cleaned": all(
             row.get("staging_cleaned") is True for row in summaries
         ) if args.cleanup_staging else False,

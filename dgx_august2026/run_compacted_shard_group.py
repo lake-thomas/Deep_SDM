@@ -185,11 +185,30 @@ def run_output_qa(
     mc_samples: int,
 ) -> dict:
     summary = output_dir / "summary.json"
-    if summary.is_file():
+    completed = output_dir / "COMPLETED"
+    if summary.is_file() and completed.is_file():
         payload = json.loads(summary.read_text(encoding="utf-8"))
-        if payload.get("production_ready") is True:
+        expected_count = len([
+            line for line in tile_list.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ])
+        expected = {
+            "status": "complete",
+            "production_ready": True,
+            "host": host,
+            "region": region,
+            "product": product,
+            "tile_manifest_sha256": sha256(tile_list),
+            "expected_tile_count": expected_count,
+            "expected_score_space": candidate["score_space"],
+            "expected_calibrator_sha256": candidate["calibrator_sha256"],
+            "base_seed": base_seed,
+            "expected_mc_samples": mc_samples,
+            "output_root": str(output_root.resolve()),
+        }
+        if all(payload.get(key) == value for key, value in expected.items()):
             return payload
-        raise RuntimeError(f"Pre-existing QA is not ready: {summary}")
+        raise RuntimeError(f"Pre-existing QA differs from requested evidence: {summary}")
     if output_dir.exists():
         raise FileExistsError(f"Refusing incomplete QA directory: {output_dir}")
     command = [
@@ -205,7 +224,7 @@ def run_output_qa(
             "--expected-calibrator-sha256", candidate["calibrator_sha256"]
         ])
     result = subprocess.run(command, capture_output=True, text=True, check=False)
-    if result.returncode != 0 or not summary.is_file():
+    if result.returncode != 0 or not summary.is_file() or not completed.is_file():
         raise RuntimeError(
             f"Output QA failed for {host}:{product}: {result.stdout}\n{result.stderr}"
         )
@@ -277,7 +296,22 @@ def execute(args: argparse.Namespace) -> dict:
         write_json_atomic(design_path, design)
     completed = metadata_root / "COMPLETED"
     if completed.is_file():
-        return json.loads((metadata_root / "summary.json").read_text(encoding="utf-8"))
+        summary_path = metadata_root / "summary.json"
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        expected = {
+            "status": "complete",
+            "region": args.region,
+            "shard_id": shard_id,
+            "design_sha256": sha256(design_path),
+            "all_compact_qa_passed": True,
+        }
+        if not all(payload.get(key) == value for key, value in expected.items()):
+            raise RuntimeError("Completed shard summary differs from frozen evidence")
+        if args.cleanup_staging and payload.get("staging_cleaned") is not True:
+            raise RuntimeError("Completed shard did not record requested staging cleanup")
+        if args.cleanup_staging and shard_stage.exists():
+            raise RuntimeError("Completed shard staging directory still exists")
+        return payload
 
     runs = []
     compactions = []
@@ -289,7 +323,7 @@ def execute(args: argparse.Namespace) -> dict:
             compact_dir = durable_root / args.region / host / product / f"shard_{shard_id}"
             compact_summary = compact_dir / "summary.json"
             compact_qa_dir = metadata_root / "compact_qa" / host / product
-            if compact_summary.is_file():
+            if compact_summary.is_file() and compact_dir.joinpath("COMPLETED").is_file():
                 compact_payload = json.loads(compact_summary.read_text(encoding="utf-8"))
                 if compact_payload.get("status") != "complete":
                     raise RuntimeError(f"Pre-existing compaction is not complete: {compact_summary}")
