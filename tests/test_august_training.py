@@ -66,6 +66,10 @@ from august2026_ailanthus_blockcv import replacement_name
 from august2026_ailanthus_production_train import (
     replacement_name as replacement_production_name,
 )
+from august2026_ailanthus_horizon_retry import (
+    HORIZON_EPOCHS,
+    retry_name as ailanthus_horizon_retry_name,
+)
 from august2026_mc_stability_evidence import PairAccumulator, advancement_rule
 from august2026_mc_stability_screen import (
     experiment_name as mc_experiment_name,
@@ -658,6 +662,20 @@ class AugustExperimentDesignTests(unittest.TestCase):
         disabled_consistency_name = replacement_production_name(selection)
         self.assertEqual(modality_name, disabled_consistency_name)
         self.assertNotIn("consw", disabled_consistency_name)
+
+    def test_ailanthus_horizon_retry_name_freezes_selection_rule(self):
+        selection = {
+            "background_target": 20000,
+            "radiometric_recipe": "rad2",
+            "image_modality_dropout_probability": 0.25,
+            "dropout": 0.25,
+            "label_smoothing": 0.05,
+            "production_postfit_calibration": "none",
+        }
+        name = ailanthus_horizon_retry_name(selection)
+        self.assertIn(f"_h{HORIZON_EPOCHS:03d}_", name)
+        self.assertIn("_moddrop25_", name)
+        self.assertTrue(name.startswith("production_retry_ailanthus_altissima_"))
 
     def test_ailanthus_robustness_advancement_gates_are_conjunctive(self):
         import pandas as pd

@@ -23,6 +23,66 @@ from august2026_summarize_experiments import (
 
 
 HOST = "ailanthus_altissima"
+EXPECTED_STEPS = {
+    "raw:matched", "raw:exact_overlap",
+    "configured:matched", "configured:exact_overlap",
+}
+
+
+def finalize_existing_status(
+    registry: Path,
+    blockcv_evidence_dir: Path,
+    output_root: Path,
+) -> dict:
+    """Finalize a completed gate after a synthesis-only runner interruption."""
+    code_root = Path(__file__).resolve().parent
+    finalization_commit = current_clean_commit(code_root)
+    status_path = output_root / "acceptance_status.json"
+    acceptance_summary = output_root / "acceptance" / "summary.json"
+    if not status_path.is_file() or not acceptance_summary.is_file():
+        raise FileNotFoundError("Existing runner status or acceptance summary is missing")
+    status = read_json(status_path)
+    final = read_json(acceptance_summary)
+    training_status = summarize_registry(registry, allow_incomplete=False)
+    expected = {
+        "registry_sha256": sha256(registry),
+        "training_metrics_sha256": sha256(Path(training_status["metrics_csv"])),
+        "blockcv_summary_sha256": sha256(blockcv_evidence_dir / "summary.json"),
+    }
+    observed = {key: status.get(key) for key in expected}
+    if observed != expected:
+        raise ValueError(f"Existing runner identity changed: {observed} != {expected}")
+    if final.get("registry_sha256") != expected["registry_sha256"]:
+        raise ValueError("Acceptance summary registry identity changed")
+    if final.get("training_metrics_sha256") != expected["training_metrics_sha256"]:
+        raise ValueError("Acceptance summary training identity changed")
+    if final.get("blockcv_summary_sha256") != expected["blockcv_summary_sha256"]:
+        raise ValueError("Acceptance summary BlockCV identity changed")
+    completed = set(status.get("completed_steps", []))
+    if completed != EXPECTED_STEPS:
+        raise RuntimeError(f"Artifact probes are incomplete: {completed}")
+    for _, output, _ in probe_commands(
+        registry, output_root, status["device"], int(status["batch_size"]), True
+    ):
+        if not (output / "COMPLETED").is_file():
+            raise FileNotFoundError(f"Completed artifact marker is missing: {output}")
+    ready = final.get("production_ready_for_release_assembly") is True
+    status.pop("active_step", None)
+    status.update({
+        "status": "complete" if ready else "complete_with_failures",
+        "completed_step_count": len(completed),
+        "production_ready_for_release_assembly": ready,
+        "replacement_acceptance": str(acceptance_summary.resolve()),
+        "replacement_acceptance_sha256": sha256(acceptance_summary),
+        "failures": final.get("failures", []),
+        "probe_code_commit": status.get("code_commit"),
+        "finalization_code_commit": finalization_commit,
+    })
+    write_json_atomic(status_path, status)
+    (output_root / "COMPLETED").write_text(
+        "complete\n" if ready else "complete_with_failures\n", encoding="utf-8"
+    )
+    return status
 
 
 def probe_commands(
@@ -164,13 +224,20 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--resume-completed", action="store_true")
+    parser.add_argument("--finalize-existing", action="store_true")
     args = parser.parse_args()
     if args.batch_size <= 0:
         parser.error("--batch-size must be positive")
-    print(json.dumps(run_acceptance(
-        args.registry, args.blockcv_evidence_dir, args.output_root,
-        args.device, args.batch_size, args.resume_completed,
-    ), indent=2))
+    if args.finalize_existing:
+        result = finalize_existing_status(
+            args.registry, args.blockcv_evidence_dir, args.output_root
+        )
+    else:
+        result = run_acceptance(
+            args.registry, args.blockcv_evidence_dir, args.output_root,
+            args.device, args.batch_size, args.resume_completed,
+        )
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
