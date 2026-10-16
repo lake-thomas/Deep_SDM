@@ -210,6 +210,10 @@ class HostModelBase(nn.Module):
         self._training_label_smoothing = 0.0
         self._radiometric_consistency_weight = 0.0
         self._image_modality_dropout_probability = 0.0
+        # October 2026 options (defaults reproduce the August behaviour exactly).
+        self._image_modality_mode = "blank"
+        self._image_feature_dim_amplitude = 0.0
+        self._same_ground_consistency_weight = 0.0
         self._last_training_loss_components = {}
 
     def configure_training_loss(
@@ -218,6 +222,9 @@ class HostModelBase(nn.Module):
         label_smoothing: float = 0.0,
         radiometric_consistency_weight: float = 0.0,
         image_modality_dropout_probability: float = 0.0,
+        image_modality_mode: str = "blank",
+        image_feature_dim_amplitude: float = 0.0,
+        same_ground_consistency_weight: float = 0.0,
     ) -> None:
         """Configure training-only weighting/smoothing.
 
@@ -249,11 +256,43 @@ class HostModelBase(nn.Module):
         self._image_modality_dropout_probability = float(
             image_modality_dropout_probability
         )
+        if image_modality_mode not in {"blank", "feature", "dim", "none"}:
+            raise ValueError("image_modality_mode must be blank, feature, dim or none")
+        if not 0 <= image_feature_dim_amplitude < 1:
+            raise ValueError("image_feature_dim_amplitude must be in [0, 1)")
+        if not same_ground_consistency_weight >= 0:
+            raise ValueError("same_ground_consistency_weight must be non-negative")
+        self._image_modality_mode = str(image_modality_mode)
+        self._image_feature_dim_amplitude = float(image_feature_dim_amplitude)
+        self._same_ground_consistency_weight = float(same_ground_consistency_weight)
 
     def apply_image_modality_dropout(self, features: torch.Tensor) -> torch.Tensor:
-        """Drop complete image embeddings per sample during training only."""
+        """Training-only regularisation of the image embedding; identity at inference.
+
+        Modes (October 2026):
+          blank   August behaviour: zero the whole embedding per sample with the configured probability,
+                  scaling kept embeddings by 1 / (1 - p).
+          feature ordinary dropout on individual embedding units with the configured probability.
+          dim     multiply each sample's embedding by u ~ Uniform(1 - a, 1 + a) (mean 1), a = amplitude.
+          none    no image-embedding regularisation.
+        The feature and dim modes keep the expected embedding equal to the inference embedding, so the
+        fusion head never sees an inference-time magnitude it was not trained on.
+        """
+        if not self.training:
+            return features
+        mode = self._image_modality_mode
+        if mode == "none":
+            return features
+        if mode == "feature":
+            return F.dropout(features, p=self._image_modality_dropout_probability, training=True)
+        if mode == "dim":
+            a = self._image_feature_dim_amplitude
+            if a <= 0:
+                return features
+            u = 1.0 + a * (2.0 * torch.rand((features.shape[0], 1), device=features.device) - 1.0)
+            return features * u.to(features.dtype)
         probability = self._image_modality_dropout_probability
-        if not self.training or probability <= 0:
+        if probability <= 0:
             return features
         keep = (
             torch.rand((features.shape[0], 1), device=features.device)
@@ -288,12 +327,37 @@ class HostModelBase(nn.Module):
             paired_out = self.forward_from_batch(paired_batch)
             consistency = F.mse_loss(torch.sigmoid(out), torch.sigmoid(paired_out))
         total = supervised + self._radiometric_consistency_weight * consistency
+        same_ground = torch.zeros((), dtype=supervised.dtype, device=supervised.device)
+        if self._same_ground_consistency_weight > 0 and "sg_image_a" in batch:
+            same_ground = self.same_ground_consistency(batch)
+            total = total + self._same_ground_consistency_weight * same_ground
         self._last_training_loss_components = {
             "supervised": supervised.detach(),
             "radiometric_consistency": consistency.detach(),
             "radiometric_consistency_weight": self._radiometric_consistency_weight,
+            "same_ground_consistency": same_ground.detach(),
+            "same_ground_consistency_weight": self._same_ground_consistency_weight,
         }
         return total
+
+    def same_ground_consistency(self, batch) -> torch.Tensor:
+        """Mean squared logit difference between two acquisitions of the same ground (October 2026).
+
+        The pair forward pass runs with the model in eval mode (BatchNorm running statistics, no dropout,
+        no image-embedding regularisation), i.e. exactly as at inference, with gradients enabled. Both
+        images share the same environmental vector. The A and B images go through one concatenated batch.
+        """
+        device = next(self.parameters()).device
+        img = torch.cat([batch["sg_image_a"], batch["sg_image_b"]], dim=0).to(device)
+        env = batch["sg_env"].to(device)
+        was_training = self.training
+        self.eval()
+        try:
+            out = self.forward_from_batch({"image": img, "env": torch.cat([env, env], dim=0)})
+        finally:
+            self.train(was_training)
+        out_a, out_b = out.float().chunk(2, dim=0)
+        return F.mse_loss(out_a, out_b)
 
     def training_loss_components(self) -> dict:
         return dict(self._last_training_loss_components)
