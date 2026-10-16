@@ -1,4 +1,4 @@
-"""Small dependency-free helpers for reproducible August tiled inference."""
+"""Small dependency-free helpers for reproducible tiled inference."""
 
 from __future__ import annotations
 

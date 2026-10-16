@@ -91,7 +91,7 @@ from rasterio.windows import Window, from_bounds
 
 # Project-local imports. Keep model.py in the same directory or on PYTHONPATH.
 from model import build_model, normalize_model_type  # noqa: E402
-from august2026_inference_provenance import derive_tile_seed  # noqa: E402
+from inference_provenance import derive_tile_seed  # noqa: E402
 from image_harmonization import harmonize_numpy, validate as validate_harmonization  # noqa: E402
 
 IMAGE_HARMONIZATION = None  # set from the model config in main() (October 2026)
