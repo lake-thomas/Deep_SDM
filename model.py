@@ -210,7 +210,7 @@ class HostModelBase(nn.Module):
         self._training_label_smoothing = 0.0
         self._radiometric_consistency_weight = 0.0
         self._image_modality_dropout_probability = 0.0
-        # October 2026 options (defaults reproduce the August behaviour exactly).
+        # Optional settings; the defaults leave training unchanged.
         self._image_modality_mode = "blank"
         self._image_feature_dim_amplitude = 0.0
         self._same_ground_consistency_weight = 0.0
@@ -229,7 +229,7 @@ class HostModelBase(nn.Module):
         """Configure training-only weighting/smoothing.
 
         Validation always uses ordinary BCE against unsmoothed labels so model
-        selection remains comparable across August loss arms.
+        selection remains comparable across loss settings.
         """
         if pos_weight is not None and (not torch.isfinite(torch.tensor(pos_weight)) or pos_weight <= 0):
             raise ValueError("pos_weight must be finite and positive")
@@ -269,8 +269,8 @@ class HostModelBase(nn.Module):
     def apply_image_modality_dropout(self, features: torch.Tensor) -> torch.Tensor:
         """Training-only regularisation of the image embedding; identity at inference.
 
-        Modes (October 2026):
-          blank   August behaviour: zero the whole embedding per sample with the configured probability,
+        Modes:
+          blank   default: zero the whole embedding per sample with the configured probability,
                   scaling kept embeddings by 1 / (1 - p).
           feature ordinary dropout on individual embedding units with the configured probability.
           dim     multiply each sample's embedding by u ~ Uniform(1 - a, 1 + a) (mean 1), a = amplitude.
@@ -341,7 +341,7 @@ class HostModelBase(nn.Module):
         return total
 
     def same_ground_consistency(self, batch) -> torch.Tensor:
-        """Mean squared logit difference between two acquisitions of the same ground (October 2026).
+        """Mean squared logit difference between two acquisitions of the same ground.
 
         The pair forward pass runs with the model in eval mode (BatchNorm running statistics, no dropout,
         no image-embedding regularisation), i.e. exactly as at inference, with gradients enabled. Both

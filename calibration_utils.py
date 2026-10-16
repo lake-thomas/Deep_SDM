@@ -1,4 +1,4 @@
-"""Calibration and validation-threshold utilities for August Host SDMs."""
+"""Calibration and validation-threshold utilities."""
 
 from __future__ import annotations
 

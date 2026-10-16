@@ -1,4 +1,4 @@
-"""Image harmonisation shared by training, same-ground pairs and inference (October 2026).
+"""Image harmonisation shared by training, same-ground pairs and inference.
 
 mode "chip_standardize": each band of a chip (already scaled to 0-1) is standardised to zero mean and
 unit SD over that chip, then mapped to a fixed reference mean and SD per band (stored in the model

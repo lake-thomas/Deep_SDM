@@ -1,8 +1,9 @@
-"""Same-ground NAIP chip pairs for the October 2026 consistency loss.
+"""Same-ground NAIP chip pairs for the same-ground consistency loss.
 
-Data come from october2026_make_same_ground_pairs.py: images_a.npy and images_b.npy (N x 4 x 256 x 256
-uint8, the same 512 m footprint read from two different NAIP acquisitions), env.npy (N x F, the
-environmental vector shared by both chips), keep.npy and meta.csv (split column "train"/"eval").
+A pairs directory holds images_a.npy and images_b.npy (N x 4 x H x W uint8, the same footprint read
+from two different NAIP acquisitions), env.npy (N x F, the environmental vector shared by both chips),
+keep.npy (N booleans) and meta.csv (a "split" column with "train" or "eval").
+See docs/same_ground_consistency.md.
 """
 from __future__ import annotations
 

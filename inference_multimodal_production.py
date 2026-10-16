@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Tiled inference for Host NAIP SDM multimodal models.
+Tiled inference for Deep SDM multimodal models.
 
 This script runs raster-tiled inference over NAIP GeoTIFF tiles for the seven
-model groups used in the Host NAIP SDM workflow:
+model types supported by Deep SDM:
 
     image_only
     tabular_only
@@ -64,9 +64,9 @@ os.environ["PROJ_NETWORK"] = "OFF"
 if os.environ.get("PROJ_LIB"):
     os.environ.setdefault("PROJ_DATA", os.environ["PROJ_LIB"])
 
-# Legacy Windows workstation fallback; never override an existing HPC environment.
-conda_env = r"C:\Users\talake2\AppData\Local\anaconda3\envs\naip_ailanthus_env"
-if os.name == "nt" and os.path.isdir(conda_env):
+# On Windows, conda keeps GDAL and PROJ data under Library\share in the active environment.
+conda_env = os.environ.get("CONDA_PREFIX", "")
+if os.name == "nt" and conda_env and os.path.isdir(conda_env):
     os.environ.setdefault("GDAL_DATA", os.path.join(conda_env, "Library", "share", "gdal"))
     os.environ.setdefault("PROJ_LIB", os.path.join(conda_env, "Library", "share", "proj"))
     os.environ["PATH"] += os.pathsep + os.path.join(conda_env, "Library", "bin")
@@ -94,7 +94,7 @@ from model import build_model, normalize_model_type  # noqa: E402
 from inference_provenance import derive_tile_seed  # noqa: E402
 from image_harmonization import harmonize_numpy, validate as validate_harmonization  # noqa: E402
 
-IMAGE_HARMONIZATION = None  # set from the model config in main() (October 2026)
+IMAGE_HARMONIZATION = None  # set from the model config in main()
 
 
 # -----------------------------------------------------------------------------
@@ -1221,7 +1221,7 @@ def run_inference_on_tile(
                 if naip_scale_255:
                     chip = chip / 255.0
                 chip = np.nan_to_num(chip, nan=0.0, posinf=0.0, neginf=0.0)
-                if IMAGE_HARMONIZATION is not None:  # October 2026; same function as training
+                if IMAGE_HARMONIZATION is not None:  # same function as training
                     chip = harmonize_numpy(chip, IMAGE_HARMONIZATION)
                 chip_tensor = torch.from_numpy(chip.astype(np.float32)).unsqueeze(0)
 

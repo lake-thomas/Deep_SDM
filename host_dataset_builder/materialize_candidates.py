@@ -1,4 +1,4 @@
-"""Materialize one reviewed August candidate package exactly once.
+"""Materialize one reviewed candidate package exactly once.
 
 The candidate package contains presence rows plus the union of primary and
 ranked-reserve backgrounds for both sampling arms. This module extracts one

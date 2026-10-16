@@ -35,7 +35,7 @@ def audit_dataset_manifest(
 ) -> dict[str, pd.DataFrame]:
     """Build machine-readable pre-fit QA tables without changing the manifest.
 
-    Hard findings describe conditions that can invalidate an August training or
+    Hard findings describe conditions that can invalidate a training or
     evaluation dataset. Domain counts are diagnostic and intentionally do not
     impose a universal minimum depth.
     """

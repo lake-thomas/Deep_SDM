@@ -30,16 +30,17 @@ for prefix in [sys.prefix, os.environ.get("CONDA_PREFIX")]:
     if os.path.isdir(gdal_dir):
         os.environ.setdefault("GDAL_DATA", gdal_dir)
 
-legacy_windows_env = r"C:\Users\talake2\AppData\Local\anaconda3\envs\naip_ailanthus_env"
-if os.name == "nt" and os.path.isdir(legacy_windows_env):
+# On Windows, conda keeps GDAL and PROJ data under Library\share in the active environment.
+windows_env = os.environ.get("CONDA_PREFIX", "")
+if os.name == "nt" and windows_env and os.path.isdir(windows_env):
     os.environ.setdefault(
-        "GDAL_DATA", os.path.join(legacy_windows_env, "Library", "share", "gdal")
+        "GDAL_DATA", os.path.join(windows_env, "Library", "share", "gdal")
     )
     os.environ.setdefault(
-        "PROJ_LIB", os.path.join(legacy_windows_env, "Library", "share", "proj")
+        "PROJ_LIB", os.path.join(windows_env, "Library", "share", "proj")
     )
     os.environ["PATH"] += os.pathsep + os.path.join(
-        legacy_windows_env, "Library", "bin"
+        windows_env, "Library", "bin"
     )
 
 import argparse
@@ -369,8 +370,8 @@ def main():
     if use_wandb and wandb is not None:
         wandb.init(
             name=experiment_name,
-            entity=config.get("wandb_entity", "talake2-ncsu"),
-            project=config.get("wandb_project", "host_naip_sdm"),
+            entity=config.get("wandb_entity"),
+            project=config.get("wandb_project", "deep_sdm"),
             config=config,
         )
 
@@ -453,15 +454,15 @@ def main():
         )
     if image_modality_dropout_probability > 0 and consistency_enabled:
         raise ValueError(
-            "image modality dropout and radiometric consistency must be screened "
-            "independently"
+            "image modality dropout and radiometric consistency cannot be enabled "
+            "together"
         )
     pos_weight = (
         float(train_counts.loc[0] / train_counts.loc[1])
         if loss_strategy == "pos_weight_bce"
         else None
     )
-    # October 2026 options; defaults reproduce the August behaviour.
+    # Optional settings; the defaults leave training unchanged.
     image_modality_mode = str(config.get("image_modality_mode", "blank")).lower()
     image_feature_dim_amplitude = float(config.get("image_feature_dim_amplitude", 0.0))
     same_ground = config.get("same_ground_consistency", False)

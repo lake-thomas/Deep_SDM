@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 import rasterio
 import matplotlib.pyplot as plt
@@ -45,7 +46,9 @@ def show_naip_tensor(tensor_img, title=None):
 
 def main():
     
-    img_path = r'D:\Ailanthus_NAIP_Classification\NAIP_NC_4Band\m_3608161_sw_17_060_20221004_20221207.tif'  # replace with your image path
+    if len(sys.argv) != 2:
+        sys.exit("usage: python image_transforms_example.py path/to/naip_tile.tif")
+    img_path = sys.argv[1]
     assert os.path.exists(img_path), f"File not found: {img_path}"
 
     img_tensor = load_naip_tensor(img_path)

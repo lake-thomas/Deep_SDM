@@ -1,4 +1,4 @@
-"""Build traceable August background superpools and nested manifests only.
+"""Build traceable background superpools and nested manifests only.
 
 This module intentionally stops before NAIP/environment/topography extraction.
 It creates the evidence needed to review sampling coverage, nesting, source
@@ -917,7 +917,7 @@ def build_candidate_manifests(args: argparse.Namespace) -> Path:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build nested August Host SDM candidate manifests without extracting chips."
+        description="Build nested candidate manifests without extracting chips."
     )
     parser.add_argument("--host-slug", required=True)
     parser.add_argument("--occurrence-file", required=True)

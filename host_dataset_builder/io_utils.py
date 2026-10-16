@@ -29,7 +29,7 @@ def _normalize_naip_date(value, filename: str | None = None) -> str | None:
 
 
 def add_canonical_naip_source_metadata(tileindex: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Add stable source/acquisition fields used by August sampling and QA.
+    """Add stable source/acquisition fields used by acquisition-aware sampling and QA.
 
     The local archive tile index already carries exact local paths and parsed
     acquisition metadata. This helper normalizes those fields while preserving

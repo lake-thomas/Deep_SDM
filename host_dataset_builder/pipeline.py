@@ -550,7 +550,7 @@ def main() -> None:
             print(f"  - {filename}: {error}")
         if args.manifest_qa_mode == "strict":
             raise RuntimeError(
-                f"Strict August build failed for {len(failures)} species; "
+                f"Strict build failed for {len(failures)} species; "
                 "review the per-species errors and QA packages."
             )
     else:

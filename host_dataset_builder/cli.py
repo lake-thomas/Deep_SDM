@@ -62,9 +62,9 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--background-sampling-mode", choices=["radial", "polygon", "us_naip"], default="radial", help="Radial samples local candidates around presences; polygon uses a union/difference doughnut polygon; us_naip samples broad US backgrounds from downloaded NAIP tile footprints.")
 
-    parser.add_argument("--background-allowed-states", nargs="+", default=None, help="Optional archive-state restriction for us_naip backgrounds, for example CA OR for Tanoak.")
+    parser.add_argument("--background-allowed-states", nargs="+", default=None, help="Optional archive-state restriction for us_naip backgrounds, for example CA OR.")
 
-    parser.add_argument("--background-sampling-design", choices=["area_weighted", "domain_balanced"], default="area_weighted", help="Within us_naip, use the June area-weighted design or a minimum-depth acquisition-domain design with an area-weighted residual allocation.")
+    parser.add_argument("--background-sampling-design", choices=["area_weighted", "domain_balanced"], default="area_weighted", help="Within us_naip, use an area-weighted design or a minimum-depth acquisition-domain design with an area-weighted residual allocation.")
 
     parser.add_argument("--background-domain-columns", nargs="+", default=["source_archive_state", "source_acq_year", "source_acq_month"], help="Canonical tile metadata columns defining domains for domain-balanced us_naip sampling.")
 
@@ -105,13 +105,13 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--block-group-column", type=str, default=None, help="Optional grouping column, normally source_tile_key, whose rows must be assigned to one spatial block/fold even when point centers straddle a block edge.")
 
-    parser.add_argument("--blockcv-validation-mode", choices=["row_stratified", "heldout_fold"], default="row_stratified", help="row_stratified preserves the June train/validation behavior. heldout_fold uses one complete non-test spatial fold for validation in each CV round.")
+    parser.add_argument("--blockcv-validation-mode", choices=["row_stratified", "heldout_fold"], default="row_stratified", help="row_stratified keeps a row-level train/validation split. heldout_fold uses one complete non-test spatial fold for validation in each CV round.")
 
     parser.add_argument("--spatial-thin-distance-m", type=float, default=800.0, help="Minimum allowed distance in meters between any presence or background samples after the combined PA dataset is built.")
 
     parser.add_argument("--topo-min-valid-frac", type=float, default=0.90, help="Minimum fraction of valid pixels required across all four topo layers.")
 
-    parser.add_argument("--naip-source-lock-mode", choices=["legacy", "strict"], default="legacy", help="Legacy preserves June multi-acquisition fallback behavior. Strict uses only the selected state/acquisition domain and records actual source paths.")
+    parser.add_argument("--naip-source-lock-mode", choices=["legacy", "strict"], default="legacy", help="Legacy allows a fallback across multiple acquisitions. Strict uses only the selected state/acquisition domain and records actual source paths.")
 
     parser.add_argument("--naip-min-valid-frac", type=float, default=1.0, help="Minimum valid NAIP pixel fraction required in strict source-lock mode.")
 

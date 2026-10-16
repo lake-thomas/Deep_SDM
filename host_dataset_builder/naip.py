@@ -9,7 +9,7 @@ from rasterio.warp import transform_geom
 
 
 def _add_legacy_source_aliases(points: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Retain June column names while making exact source fields authoritative."""
+    """Retain the original column names while making exact source fields authoritative."""
     out = points.copy()
     alias_map = {
         "filename": "source_filename",
@@ -43,7 +43,7 @@ def attach_naip_filename_or_url(
 ) -> gpd.GeoDataFrame:
     """Assign one deterministic exact local acquisition to each point.
 
-    Backgrounds sampled by the August USBg sampler already carry their selected
+    Backgrounds sampled by the acquisition-aware sampler already carry their selected
     footprint and are returned unchanged. Other records (normally presences)
     are spatially joined to the canonical local tile index. If overlapping
     footprints contain a point, the newest exact acquisition date is selected
@@ -387,7 +387,7 @@ def _legacy_chip(
     tileindex_gdf: gpd.GeoDataFrame,
     naip_file_index: dict,
 ) -> dict | None:
-    """Preserve the June multi-tile extraction path for compatibility."""
+    """Original multi-tile extraction path, kept for legacy source-lock mode."""
     point_wgs84 = Point(lon, lat)
     matches = tileindex_gdf[tileindex_gdf.geometry.intersects(point_wgs84)]
     if matches.empty:

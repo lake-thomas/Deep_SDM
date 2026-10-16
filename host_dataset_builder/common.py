@@ -69,18 +69,18 @@ Optional:
 Example: single species with normalized topography
 --------------------------------------------------
 
-python /mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Deep_SDM/create_host_datasets.py \
-  --occurrence-file "/mnt/rsstu_dsfas_gsv_naip/Promit_Host_Occurrences/Fully_thinned_data/coordinate_uncertainty_under_256/prunus_cerasus_thinned.csv" \
-  --output-root "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Host_Datasets" \
-  --tileindex "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/NAIP_Imagery_Tile_Indices/NAIP_US_Local_Archive_Tile_Index_ByTileKey.gpkg" \
-  --naip-folder "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/NAIP_Archive" \
-  --worldclim-folder "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Env_Data/Worldclim" \
-  --ghm-raster "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Env_Data/Global_Human_Modification/gHM_WGS84.tif" \
-  --topo-normalization-stats "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Env_Data/Topography_3DEP/mosaic/topo_norm_stats_3dep_30m.json" \
-  --dem-raster "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Env_Data/Topography_3DEP/mosaic/dem_3dep_13_epsg5070_30m.tif" \
-  --slope-raster "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Env_Data/Topography_3DEP/mosaic/slope_degrees_3dep_13_epsg5070_30m.tif" \
-  --northness-raster "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Env_Data/Topography_3DEP/mosaic/northness_3dep_13_epsg5070_30m.tif" \
-  --eastness-raster "/mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Env_Data/Topography_3DEP/mosaic/eastness_3dep_13_epsg5070_30m.tif" \
+python -m host_dataset_builder \
+  --occurrence-file occurrences/species_thinned.csv \
+  --output-root datasets/ \
+  --tileindex naip/tile_index.gpkg \
+  --naip-folder naip/ \
+  --worldclim-folder env/worldclim/ \
+  --ghm-raster env/gHM_WGS84.tif \
+  --topo-normalization-stats env/topo_norm_stats.json \
+  --dem-raster env/dem.tif \
+  --slope-raster env/slope.tif \
+  --northness-raster env/northness.tif \
+  --eastness-raster env/eastness.tif \
   --background-inner-buffer-km 5 \
   --background-buffer-km 50 \
   --background-multiplier 10 \
@@ -94,8 +94,9 @@ python /mnt/rsstu_dsfas_gsv_naip/Host_NAIP_SDM/Deep_SDM/create_host_datasets.py 
 from __future__ import annotations
 import os
 
-if os.name == "nt":
-    conda_env = r"C:\Users\talake2\AppData\Local\anaconda3\envs\naip_ailanthus_env"
+# On Windows, conda keeps GDAL and PROJ data under Library\share in the active environment.
+conda_env = os.environ.get("CONDA_PREFIX", "")
+if os.name == "nt" and conda_env:
     os.environ["GDAL_DATA"] = os.path.join(conda_env, "Library", "share", "gdal")
     os.environ["PROJ_LIB"] = os.path.join(conda_env, "Library", "share", "proj")
     os.environ["PATH"] += os.pathsep + os.path.join(conda_env, "Library", "bin")
