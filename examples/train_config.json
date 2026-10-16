@@ -1,0 +1,56 @@
+{
+  "experiment": "my_species",
+  "csv_path": "datasets/my_species/my_species_dataset.csv",
+  "image_dir": "datasets/my_species",
+  "output_dir": "runs",
+
+  "model_type": "image_tabular",
+  "env_features": "auto",
+  "include_topo_scalars": true,
+  "pretrained_image": true,
+  "naip_channels": 4,
+  "naip_scale_255": true,
+  "hidden_dim": 192,
+  "env_feature_dim": 128,
+  "dropout": 0.25,
+
+  "epochs": 100,
+  "batch_size": 128,
+  "learning_rate": 1e-05,
+  "lr_patience": 5,
+  "es_patience": 10,
+  "loss_strategy": "ordinary_bce",
+  "label_smoothing": 0.05,
+
+  "spatial_augmentation": "dihedral",
+  "radiometric_augmentation": {
+    "enabled": true,
+    "probability": 0.8,
+    "scene_gain": 0.08,
+    "gamma": 0.06,
+    "contrast": 0.0627,
+    "band_gain": 0.02,
+    "band_offset": 0.01,
+    "max_mean_ndvi_shift": 0.0538,
+    "attempts": 3
+  },
+
+  "same_ground_consistency": {
+    "enabled": true,
+    "weight": 1.0,
+    "pairs_dir": "pairs/my_species",
+    "batch_size": 64,
+    "num_workers": 4
+  },
+
+  "num_workers": 6,
+  "pin_memory": true,
+  "persistent_workers": true,
+  "use_fp16": true,
+  "strict_dataset": true,
+  "seed": 42,
+  "deterministic_training": true,
+  "restore_best_model": true,
+  "postfit_calibration": "none",
+  "use_wandb": false
+}

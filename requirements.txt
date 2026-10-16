@@ -1,0 +1,20 @@
+# Tested with Python 3.10. Minimum versions are the oldest tested.
+# Install PyTorch for your hardware first: https://pytorch.org
+torch>=2.4
+torchvision>=0.19
+numpy>=2.2
+pandas>=2.3
+rasterio>=1.4
+scikit-learn>=1.7
+matplotlib>=3.10
+tqdm>=4.67
+
+# Dataset builder
+geopandas>=1.1
+shapely>=2.1
+scipy>=1.15
+affine>=2.4
+
+# Optional: basemaps in evaluation figures, and Weights & Biases logging
+contextily>=1.7
+wandb>=0.25
