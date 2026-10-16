@@ -244,6 +244,7 @@ def make_dataloaders(config: dict, model_type: str, env_vars: list[str]):
         include_topo_scalars=bool(config.get("include_topo_scalars", True)),
         naip_scale_255=bool(config.get("naip_scale_255", True)),
         strict=bool(config.get("strict_dataset", True)),
+        image_harmonization=config.get("image_harmonization"),
     )
 
     train_ds = HostNAIPDataset(
@@ -460,12 +461,39 @@ def main():
         if loss_strategy == "pos_weight_bce"
         else None
     )
+    # October 2026 options; defaults reproduce the August behaviour.
+    image_modality_mode = str(config.get("image_modality_mode", "blank")).lower()
+    image_feature_dim_amplitude = float(config.get("image_feature_dim_amplitude", 0.0))
+    same_ground = config.get("same_ground_consistency", False)
+    same_ground = same_ground if isinstance(same_ground, dict) else {"enabled": bool(same_ground)}
+    same_ground_enabled = bool(same_ground.get("enabled", False))
+    same_ground_weight = float(same_ground.get("weight", 0.0)) if same_ground_enabled else 0.0
+    if same_ground_enabled and (same_ground_weight <= 0 or not same_ground.get("pairs_dir")):
+        raise ValueError("same_ground_consistency needs a positive weight and pairs_dir")
+    if same_ground_enabled and not (req["image"] and req["env"]):
+        raise ValueError("same_ground_consistency is implemented for image + environmental models")
     model.configure_training_loss(
         pos_weight=pos_weight,
         label_smoothing=label_smoothing,
         radiometric_consistency_weight=consistency_weight,
         image_modality_dropout_probability=image_modality_dropout_probability,
+        image_modality_mode=image_modality_mode,
+        image_feature_dim_amplitude=image_feature_dim_amplitude,
+        same_ground_consistency_weight=same_ground_weight,
     )
+    if same_ground_enabled:
+        from same_ground_pairs import PairAugmentedLoader, SameGroundPairDataset
+        pair_ds = SameGroundPairDataset(same_ground["pairs_dir"], split="train",
+                                        dihedral=True, naip_scale_255=bool(config.get("naip_scale_255", True)),
+                                        image_harmonization=config.get("image_harmonization"))
+        if len(pair_ds) == 0:
+            raise RuntimeError("same_ground_consistency: no training pairs")
+        pair_env_dim = int(pair_ds.env.shape[1])
+        if pair_env_dim != len(env_vars):
+            raise ValueError(f"pair env dimension {pair_env_dim} does not match the model's tabular features")
+        train_dl = PairAugmentedLoader(train_dl, pair_ds, batch_size=int(same_ground.get("batch_size", 64)),
+                                       num_workers=int(same_ground.get("num_workers", 4)), seed=seed)
+        print(f"Same-ground consistency: weight {same_ground_weight}, {len(pair_ds)} training pairs")
     dataset_sha256 = hashlib.sha256(Path(config["csv_path"]).read_bytes()).hexdigest()
     training_design = {
         "loss_strategy": loss_strategy,
@@ -500,11 +528,22 @@ def main():
             ),
         },
         "image_modality_dropout": {
-            "enabled": image_modality_dropout_probability > 0,
+            "enabled": image_modality_dropout_probability > 0 or image_modality_mode == "dim",
+            "mode": image_modality_mode,
             "probability": image_modality_dropout_probability,
-            "mask_unit": "complete_image_embedding_per_training_sample",
-            "retained_embedding_scaling": "inverted_dropout",
+            "dim_amplitude": image_feature_dim_amplitude,
+            "mask_unit": {"blank": "complete_image_embedding_per_training_sample",
+                          "feature": "individual_image_embedding_units",
+                          "dim": "per_sample_embedding_scale_uniform_mean_one",
+                          "none": "none"}[image_modality_mode],
+            "retained_embedding_scaling": "inverted_dropout" if image_modality_mode in ("blank", "feature") else "none",
             "validation_test_inference": "disabled_full_image_pathway",
+        },
+        "same_ground_consistency": {
+            "enabled": same_ground_enabled,
+            "weight": same_ground_weight,
+            "pairs_dir": same_ground.get("pairs_dir"),
+            "loss": "mean squared logit difference, pair branch in eval mode",
         },
         "seed": seed,
     }

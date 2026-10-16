@@ -92,6 +92,9 @@ from rasterio.windows import Window, from_bounds
 # Project-local imports. Keep model.py in the same directory or on PYTHONPATH.
 from model import build_model, normalize_model_type  # noqa: E402
 from august2026_inference_provenance import derive_tile_seed  # noqa: E402
+from image_harmonization import harmonize_numpy, validate as validate_harmonization  # noqa: E402
+
+IMAGE_HARMONIZATION = None  # set from the model config in main() (October 2026)
 
 
 # -----------------------------------------------------------------------------
@@ -1218,6 +1221,8 @@ def run_inference_on_tile(
                 if naip_scale_255:
                     chip = chip / 255.0
                 chip = np.nan_to_num(chip, nan=0.0, posinf=0.0, neginf=0.0)
+                if IMAGE_HARMONIZATION is not None:  # October 2026; same function as training
+                    chip = harmonize_numpy(chip, IMAGE_HARMONIZATION)
                 chip_tensor = torch.from_numpy(chip.astype(np.float32)).unsqueeze(0)
 
             topo_tensor: torch.Tensor | None = None
@@ -1474,6 +1479,10 @@ def main() -> None:
         raise ValueError("--seed must be between 0 and 2^32 - 1")
 
     config = load_json(args.config) or {}
+    global IMAGE_HARMONIZATION
+    IMAGE_HARMONIZATION = validate_harmonization(config.get("image_harmonization"))
+    if IMAGE_HARMONIZATION is not None:
+        print(f"Image harmonization: {IMAGE_HARMONIZATION}")
     checkpoint_meta = load_checkpoint_state(args.checkpoint, torch.device("cpu"))
     model_type = infer_model_type_from_checkpoint(checkpoint_meta, config, args.model_type) # model_type like "image_topo_tabular"
     req = model_requires(model_type)

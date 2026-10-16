@@ -305,7 +305,10 @@ class HostNAIPDataset(Dataset):
         include_topo_scalars: bool = True,
         naip_scale_255: bool = True,
         strict: bool = True,
+        image_harmonization: dict | None = None,
     ):
+        from image_harmonization import validate as _validate_harmonization
+        self.image_harmonization = _validate_harmonization(image_harmonization)
         self.csv_path = Path(csv_path)
         self.image_base_dir = Path(image_base_dir)
         self.split = split
@@ -472,6 +475,11 @@ class HostNAIPDataset(Dataset):
         if image_tensor is not None and self.paired_view_transform is not None:
             image_tensor, consistency_image = self.paired_view_transform(image_tensor)
 
+        if image_tensor is not None and self.image_harmonization is not None:
+            from image_harmonization import harmonize_torch
+            image_tensor = harmonize_torch(image_tensor.float(), self.image_harmonization)
+            if consistency_image is not None:
+                consistency_image = harmonize_torch(consistency_image.float(), self.image_harmonization)
         if image_tensor is not None:
             batch["image"] = image_tensor.float()
         if consistency_image is not None:
